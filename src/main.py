@@ -1233,6 +1233,21 @@ def update_activity(
     )
 
 
+@mcp.tool()
+def replace_holder_lines(activity_id: int, lines: list[str]) -> dict:
+    """Choose: orchの担い手欄だけを差し替えたいとき（replace holder lines）。
+
+    説明の「担い手: 」で始まる全行をlines（各要素は「担い手: 」で始まる1行）に差し替える。
+    他の本文は触らず、updated_atを進めない。説明全文の書き換えはupdate_activity。
+
+    Returns:
+        {activity_id, holder_lines, body_changed_at（担い手欄を除く本文が最後に変わった時刻）,
+        holder_warnings?}。説明本文もtag notesも返さない。
+        起こし直しの仕込みはサーバーの見張りが後から確かめる
+    """
+    return activity_service.replace_holder_lines(activity_id, lines)
+
+
 # ----------------------------
 # goal機構
 # ----------------------------

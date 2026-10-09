@@ -209,3 +209,95 @@ def test_handoff_without_any_job_id_warns_with_the_expected_format():
     assert len(warnings) == 1
     assert "job id" in warnings[0]
     assert "起こし直し: Cron <job id>" in warnings[0]
+
+
+class TestReplaceHolderLines:
+    def test_replaces_only_holder_lines_and_keeps_updated_at(self, temp_db):
+        from src.services.activity_service import replace_holder_lines
+
+        aid = _orch(_desc(OLD_SID) + "担い手: 2行目（旧）\n末尾の本文\n")
+        conn = get_connection()
+        conn.execute("UPDATE activities SET updated_at = '2026-01-02 03:04:05' WHERE id = ?", (aid,))
+        conn.commit()
+        conn.close()
+        new_line = f"担い手: holder-y（sessionId {NEW_SID}）／2026-10-09 12:00"
+
+        result = replace_holder_lines(aid, [new_line])
+
+        assert result["body_changed_at"] == "2026-01-02 03:04:05"
+        assert result["holder_lines"] == [new_line]
+        assert set(result) <= {"activity_id", "holder_lines", "body_changed_at", "holder_warnings"}
+        row = _rows("SELECT description, updated_at FROM activities WHERE id = ?", (aid,))[0]
+        assert row["updated_at"] == "2026-01-02 03:04:05"
+        assert row["description"] == (
+            f"## 状態\n{new_line}\n常駐: 相談役 / sessionId {OTHER_SID}\n末尾の本文\n"
+        )
+
+    def test_rejects_non_holder_lines_and_unknown_activity(self, temp_db):
+        from src.services.activity_service import replace_holder_lines
+
+        aid = _orch(_desc(OLD_SID))
+        assert replace_holder_lines(aid, ["状態: x"])["error"]["code"] == "VALIDATION_ERROR"
+        assert replace_holder_lines(aid, ["担い手: a\n担い手: b"])["error"]["code"] == "VALIDATION_ERROR"
+        assert replace_holder_lines(aid, [])["error"]["code"] == "VALIDATION_ERROR"
+        assert replace_holder_lines(999999, ["担い手: a"])["error"]["code"] == "NOT_FOUND"
+
+    def test_warns_about_busy_old_holder_but_not_about_missing_job_id(self, temp_db):
+        from src.services.activity_service import replace_holder_lines
+
+        aid = _orch(_desc(OLD_SID))
+        _write_session(OLD_SID, os.getpid(), status="busy")
+
+        warnings = replace_holder_lines(aid, [f"担い手: y（sessionId {NEW_SID}）"])["holder_warnings"]
+
+        assert len(warnings) == 1 and "busy" in warnings[0]
+
+    def test_inserts_after_heading_when_there_is_no_holder_line(self, temp_db):
+        from src.services.activity_service import replace_holder_lines
+
+        aid = _orch("## 状態\n本文\n")
+        replace_holder_lines(aid, ["担い手: z"])
+        assert _rows("SELECT description FROM activities WHERE id = ?", (aid,))[0][0] == "## 状態\n担い手: z\n本文\n"
+
+
+class TestCronWatchAfterPartialReplace:
+    def _replace(self, aid):
+        from src.services.activity_service import replace_holder_lines
+        replace_holder_lines(aid, [f"担い手: y（sessionId {NEW_SID}）"])
+
+    def _write_desc(self, aid, desc):
+        conn = get_connection()
+        conn.execute("UPDATE activities SET description = ? WHERE id = ?", (desc, aid))
+        conn.commit()
+        conn.close()
+
+    def test_no_new_job_id_after_grace_fires_one_signal(self, temp_db):
+        from src.services.holder_watch_service import check_cron_once
+
+        aid = _orch(_desc(OLD_SID, job="81f254da"))
+        self._replace(aid)
+        t0 = time.time()
+
+        assert check_cron_once(900, now=t0 + 60) == []
+        assert len(check_cron_once(900, now=t0 + 901)) == 1
+        assert check_cron_once(900, now=t0 + 2000) == []
+        assert len(_rows("SELECT 1 FROM signal_events WHERE kind = 'custom:holder-no-cron'")) == 1
+
+    def test_new_job_id_written_in_time_means_no_signal(self, temp_db):
+        from src.services.holder_watch_service import check_cron_once
+
+        aid = _orch(_desc(OLD_SID, job="81f254da"))
+        self._replace(aid)
+        self._write_desc(aid, _desc(NEW_SID, job="a1b2c3d4"))
+
+        assert check_cron_once(900, now=time.time() + 5000) == []
+        assert _rows("SELECT 1 FROM signal_events WHERE kind = 'custom:holder-no-cron'") == []
+
+    def test_holder_changed_again_drops_the_pending_check(self, temp_db):
+        from src.services.holder_watch_service import check_cron_once
+
+        aid = _orch(_desc(OLD_SID))
+        self._replace(aid)
+        self._write_desc(aid, _desc(OTHER_SID))
+
+        assert check_cron_once(900, now=time.time() + 5000) == []

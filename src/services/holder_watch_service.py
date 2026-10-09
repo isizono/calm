@@ -66,6 +66,10 @@ def _read_float_env(name: str, default: float) -> float:
     return value
 
 
+def is_holder_line(line: str) -> bool:
+    return _HOLDER_LINE_RE.match(line) is not None
+
+
 def _holder_line(description: str | None) -> str | None:
     # 常駐の表などにもsessionIdが並ぶので、最初の担い手行だけを読む
     m = _HOLDER_LINE_RE.search(description or "")
@@ -249,8 +253,88 @@ def check_once(dead_sec: float, stale_sec: float, seen_alive: set[tuple[int, str
     return fired
 
 
-def handoff_warnings(old_description: str | None, new_description: str) -> list[str]:
-    """担い手欄のsessionIdが書き換わるときの警告。書き込みは止めない。"""
+def _new_job_ids(old_description: str | None, new_description: str | None) -> set[str]:
+    return set(_JOB_ID_RE.findall(new_description or "")) - set(_JOB_ID_RE.findall(old_description or ""))
+
+
+def replace_holder_lines(description: str | None, lines: list[str]) -> str:
+    """説明の「担い手: 」で始まる全行を差し替える。最初の担い手行の位置にlinesを置き、
+    残りの担い手行は消す。担い手行が無ければ先頭の見出し行の直後（見出しが無ければ先頭）に置く。
+    """
+    text = description or ""
+    src = text.split("\n")
+    out: list[str] = []
+    placed = False
+    for line in src:
+        if _HOLDER_LINE_RE.match(line):
+            if not placed:
+                out.extend(lines)
+                placed = True
+            continue
+        out.append(line)
+    if not placed:
+        at = 1 if out and out[0].startswith("#") else 0
+        out[at:at] = lines
+    return "\n".join(out)
+
+
+# 担い手欄を差し替えた直後の、起こし直し（CronCreate）の仕込みの確かめ待ち。
+# key: (activity_id, 新担い手のsessionId) -> (差し替えた時刻, 差し替え前の説明)
+# ponytail: プロセス内の記憶なのでサーバーの再起動で消える。要るならDBに持つ。
+_pending_cron: dict[tuple[int, str], tuple[float, str]] = {}
+
+# 担い手欄の差し替えから、新しい起こし直しのjob idが状態節に載るまで待つ秒数
+CRON_GRACE_SEC = 900
+CRON_SIGNAL_KIND = "custom:holder-no-cron"
+
+
+def expect_cron(activity_id: int, old_description: str | None, new_description: str,
+                now: float | None = None) -> None:
+    """担い手欄のsessionIdが変わった差し替えの後、見張りが起こし直しの仕込みを確かめる対象に入れる。"""
+    new_sid = holder_session_id(new_description)
+    if new_sid is None or new_sid == holder_session_id(old_description):
+        return
+    _pending_cron[(activity_id, new_sid)] = (time.time() if now is None else now, old_description or "")
+
+
+def check_cron_once(grace_sec: float, now: float | None = None) -> list[dict]:
+    """差し替えから猶予を過ぎても新しい起こし直しのjob idが状態節に無ければsignalを1回立てる。"""
+    now = time.time() if now is None else now
+    fired = []
+    conn = get_connection()
+    try:
+        for (activity_id, sid), (at, base) in list(_pending_cron.items()):
+            row = conn.execute(
+                "SELECT description FROM activities WHERE id = ?", (activity_id,)
+            ).fetchone()
+            desc = row["description"] if row else None
+            if desc is None or holder_session_id(desc) != sid or _new_job_ids(base, desc):
+                del _pending_cron[(activity_id, sid)]
+                continue
+            if now - at < grace_sec:
+                continue
+            del _pending_cron[(activity_id, sid)]
+            signal = signal_service.record_signal(
+                CRON_SIGNAL_KIND,
+                f"orchの新しい担い手に起こし直しの仕込みが無い: activity {activity_id} sessionId {sid}",
+                source=SIGNAL_SOURCE,
+                detail=f"担い手欄の差し替えから{(now - at) / 60:.0f}分たっても状態節に新しい起こし直し（CronCreate）のjob idが無い",
+                refs=[{"type": "activity", "id": activity_id}],
+                context={"session_id": sid},
+            )
+            fired.append({"activity_id": activity_id, "session_id": sid, "signal_id": signal["id"]})
+    finally:
+        conn.close()
+    return fired
+
+
+def handoff_warnings(old_description: str | None, new_description: str,
+                     check_cron: bool = True) -> list[str]:
+    """担い手欄のsessionIdが書き換わるときの警告。書き込みは止めない。
+
+    check_cronがFalseなら起こし直しのjob idは見ない（担い手欄だけの差し替えの直後は
+    後継がまだ仕込んでいないのが普通なので、継続の見張りが後で確かめる）。
+    """
     old_sid = holder_session_id(old_description)
     new_sid = holder_session_id(new_description)
     # 空席にする書き換えは本人が自分で行うことが多く、本人は必ずbusyなので見ない
@@ -273,8 +357,7 @@ def handoff_warnings(old_description: str | None, new_description: str) -> list[
                 "止めるとSAの作業が途中で切れる"
             )
     # 後継は旧状態節を写すので、旧担い手のjob idが残っていても仕込みの証拠にならない
-    new_jobs = set(_JOB_ID_RE.findall(new_description)) - set(_JOB_ID_RE.findall(old_description or ""))
-    if not new_jobs:
+    if check_cron and not _new_job_ids(old_description, new_description):
         warnings.append(
             "状態節に新しい起こし直し（CronCreate）のjob idが無い。"
             "仕込んでから「起こし直し: Cron <job id>（毎時MM分・MM分）」の形で状態節に書く"
@@ -310,5 +393,7 @@ class HolderWatch:
             try:
                 for f in check_once(self._dead_sec, self._stale_sec, self._seen_alive):
                     logger.info("holder watch fired: %s", f)
+                for f in check_cron_once(CRON_GRACE_SEC):
+                    logger.info("holder watch (cron) fired: %s", f)
             except Exception:
                 logger.exception("holder watch check failed, continuing")

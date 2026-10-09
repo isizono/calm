@@ -11,7 +11,7 @@ MCPツールの詳細仕様は `src/main.py` の各ツールのdocstringにあ�
 | トピック | `add_topic`, `get_topics` | 議論トピックの作成・新しい順の取得 |
 | 議論ログ | `add_logs`, `get_logs` | 議論の経緯や検討過程の一括記録・取得 |
 | 決定事項 | `add_decisions`, `get_decisions`, `pull_precedents` | 合意内容の記録・取得、設計判断前の近傍トピック判例の網羅確認 |
-| アクティビティ | `add_activity`, `get_activities`, `update_activity` | 作業タスクの作成・取得・状態更新 |
+| アクティビティ | `add_activity`, `get_activities`, `update_activity`, `replace_holder_lines` | 作業タスクの作成・取得・状態更新 |
 | check-in | `check_in` | アクティビティにcheck-inし、tag notes・資材・関連decisionsを集約取得 |
 | 資材 | `add_material`, `update_material`, `get_material`, `export_material` | セッション中の成果物をタグ付き独立エンティティとして保存・更新・取得・md出力 |
 | リレーション | `add_relation`, `remove_relation`, `get_map` | エンティティ間の関連の追加・削除・グラフ探索 |
