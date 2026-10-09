@@ -3372,6 +3372,10 @@ if __name__ == "__main__":
             )
             _staleness_watchdog.start()
 
+        from src.services.holder_watch_service import HolderWatch
+
+        HolderWatch().start()
+
         try:
             _start_embedding_warmup()
             logger.info(f"Starting HTTP server on {HTTP_HOST}:{HTTP_PORT}")
