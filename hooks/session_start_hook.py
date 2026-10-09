@@ -15,6 +15,7 @@ checkin_tier_service側が埋め込む）。
 import json
 import os
 import sys
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1169,6 +1170,38 @@ def _build_session_context(
         conn.close()
 
 
+_RESET_DELIVERY_TIMEOUT_SEC = 1.0
+
+
+def _reset_tag_notes_delivery(harness, source: str | None, timeout_sec: float = _RESET_DELIVERY_TIMEOUT_SEC) -> None:
+    """compact・/clear・resumeの後に、このセッションのtag notes配信済み記録をサーバーで消させる。
+
+    同じClaude Codeプロセスのまま文脈が入れ替わると、launcherが生き続けるので
+    サーバー側の配信済み記録（launcherの識別子キー）が残る。文脈から消えたnotesを
+    次の遭遇でもう一度届けるため、ここで消させる。識別子が解決できない・サーバーに
+    届かないときは何もしない（配信済みのまま残るだけで、hookの出力は妨げない）。
+    """
+    if source not in ("compact", "clear", "resume"):
+        return
+    from src.http_config import HTTP_HOST, HTTP_PORT
+    from src.infra.loopback_http import NO_PROXY_OPENER
+
+    try:
+        identity = harness.resolve_session_identity()
+        if not identity:
+            return
+        request = urllib.request.Request(
+            f"http://{HTTP_HOST}:{HTTP_PORT}/session/reset-delivery",
+            data=json.dumps({"session_id": identity}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with NO_PROXY_OPENER.open(request, timeout=timeout_sec):
+            pass
+    except Exception:
+        return
+
+
 def main() -> None:
     harness = select_harness(hook_event_name="SessionStart")
     try:
@@ -1198,6 +1231,7 @@ def main() -> None:
         if isinstance(tp, str) and tp:
             transcript_path = tp
 
+        _reset_tag_notes_delivery(harness, source)
         context = _build_session_context(session_id, source, transcript_path)
         harness.emit_additional_context(context)
     except Exception as e:

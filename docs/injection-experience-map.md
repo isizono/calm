@@ -38,8 +38,14 @@
 | context.materials | selected+remainder | リレーション経由のカタログ形式。`env.coverage.materials` に総件数を明示。全体予算超過時はさらに末尾から削られ、分子も削った後の件数へ書き換わる |
 | catalog.logs / context.latest_log | selected+remainder | 最新1件（`context.latest_log`）はcontent付き、残り（`catalog.logs`）はid+titleのカタログ。`env.coverage.logs` に総件数を明示。全体予算超過時はまずcatalog.logsが末尾から削られ、それでも収まらなければ最新1件がスタブ化される（このときのみ分子が0になる） |
 | anchor.pinned | selected+remainder | activity自身とそのタグにpinされた対象を全件content付きで返す。ただしpinned専用の枠（3,000字）を超えると、種別をまたいだ小さい順に丸ごと残し、枠をまたぐ1件は先頭を残して切りポインタを付け、残りはid+titleのスタブになる |
-| env.tag_notes | complete（6,000字の天井付き） | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文。合計が天井を超えると大きいnotesから順にdecayと同じ1行ポインタへ縮退する（全体予算10,000字には数えない） |
+| env.tag_notes | complete（6,000字の天井付き） | セッション内初回遭遇時のタグのみ（`intent:`は毎回）。対象タグのnotesは全文。合計が天井を超えると、アクティビティの種類を示すタグ（`orch`・`intent:`）を後回しにして大きいnotesから順に、天井超過を示す1行ポインタ（decayとは別の文言）へ縮退する（全体予算10,000字には数えない）。縮退したタグは配信済みにならず、天井に収まる呼び出し（次の書き込み応答など）で全文が届く。天井を超える状況が続くcheck_inでは、ポインタを1回出したあとは項目ごと出さない（`intent:`は毎回ポインタを出す）。ポインタは同じセッション（サブエージェントは別枠）で1回だけ出る |
 | catalog.map | selected+remainder | `get_map` によるリレーショングラフ（depth 1-2）。全体予算超過時に最初に削られる対象で、末尾から間引かれる |
+
+tag notesの配信済み記録は、check_in・書き込み応答と、読み取り経路（get_topics・get_logs・get_decisions・pull_precedents・get_activities）とで別々に持ち、どちらも「タグ → 配ったときのnotes_updated_at」で記録する。
+- 読み取り経路は両方の記録を見て、既に配ったタグを返さない。返したタグは自分の記録にだけ足す。このため、読み取り経路で先に届いたタグも、check_in・書き込み応答では1回届く
+- notesが書き換わったタグは未配信とみなし、生きているセッションへ1回だけ全文を配り直す。書き換えた本人の記録は新しい版に上書きするので、本人には戻らない
+- decayのポインタは記録に入れ、天井で畳んだタグはどちらの記録にも入れない
+- Claude Code側でcompact・/clear・resumeされたら、SessionStart hookがそのセッション（サブエージェントを含む）の記録を消させる。次の遭遇で全文が届き直す
 
 ## 3. RULES（MCP instructions）
 
