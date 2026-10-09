@@ -182,6 +182,31 @@ class TestBuildRequest:
         # 起動文の逐語は書かない(雛形が組む)
         assert "check_inより前に" not in dead
 
+    def test_observer_watches_bound_children_and_residents(self):
+        text = _build(role="observer", activity_id=7, parent_goal_handle="orch-g")
+        watch = text.split("## 子と常駐の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        # 対象は親goalのopen条件の束縛先から引き、観測役自身は除く
+        assert 'get_goal(handle="orch-g")' in watch
+        assert "stateがopenで、boundのtypeがactivityの条件の束縛先activity" in watch
+        assert "自分のアクティビティ(activity_id=7)は除く" in watch
+        assert "状態節の自由文から読まない" in watch
+        # get_sessionsは死んだ行を消すので、DEADを拾うには前回のsessionIdを覚えておく
+        assert "get_sessionsでactivity_idが一致する行のcli_session_id" in watch
+        assert "覚えたsessionIdを使う" in watch
+        liveness = Path(__file__).resolve().parents[2] / "scripts" / "orch_liveness.py"
+        assert f"python3 {liveness} --session-id <sessionId>" in watch
+        assert "DEAD・STUCK・ERROREDなら、報告先へadd_logs" in watch
+        assert "担い手(担い手欄の今の宛先)へSendMessageで1行知らせる" in watch
+        assert "同じ対象・同じ判定では二重に書かず送らない" in watch
+        # 測って報告するまでで、起こすのは担い手
+        assert "止まった本人には何も送らない。「続けて」等で起こさない。起こすのは担い手" in watch
+        assert "pane_claude.py" not in watch
+
+    def test_observer_holder_verdicts_include_errored_without_waking(self):
+        watch = _build(role="observer").split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        assert "   - ERRORED: その行のstatusがidleで、transcriptの末尾の会話行がAPIエラーの行" in watch
+        assert "ERROREDが出たら、報告先へadd_logsで判定スクリプトの出力をそのまま書く。担い手を「続けて」等で起こさない。" in watch
+
     def test_observer_role_requires_holder_values(self):
         with pytest.raises(ValueError):
             build_request(

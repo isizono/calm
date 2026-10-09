@@ -52,7 +52,10 @@ orchが作った束縛条件をこの依頼文の受け手に伝える。依頼�
 orch_liveness.pyで生死・固まりを、handoff_trigger.pyで文脈・圧縮・skillの版の
 交代契機を判定し、超えたら担い手へ「交代せよ」を送る。DEAD・STUCKは検知して
 報告先へ書くところまでで、後継の起動はしない(決定「無人での後継起動は環境の
-限界とする」)。--role consultant・--role observerのいずれも、--holder-name・
+限界とする」)。観測役は同じ周期で、親goalのopen条件が束縛する子bgと常駐も
+orch_liveness.pyに通し、DEAD・STUCK・ERROREDを報告先へ書いて担い手に知らせる
+(起こすのは担い手で、観測役は対象に何も送らない)。
+--role consultant・--role observerのいずれも、--holder-name・
 --holder-session-id・--holder-transcriptで起動時点の担い手を渡す。
 
 --pending-dirは、CALMに書けない内容の退避先を依頼文に埋め込む引数(省略時は
@@ -203,13 +206,24 @@ _OBSERVER_TEMPLATE = """あなたはCALMのアクティビティ「{activity_tit
 1. 生死・固まり: `python3 {liveness_script} --session-id <sessionId>` → 出力のverdictは次のとおり
    - DEAD: そのsessionIdが一致しpidがある行が無い
    - STUCK: その行のstatusがbusyのまま、transcriptが25分以上更新されていない
+   - ERRORED: その行のstatusがidleで、transcriptの末尾の会話行がAPIエラーの行(接続切れ・使用上限等でターンが途切れたまま)
    - OK: それ以外
    - 担い手欄が空席なら判定しない(空席は異常ではない)
 2. 文脈・圧縮・skillの版: `python3 {handoff_script} --session-id <sessionId> --role holder` → `trigger`がtrueなら、まだ送っていなければ担い手へSendMessageで「交代せよ」を送る(同じ相手に二重に送らない。送ったことをログに書く)
 
 DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。後継を起こすのは担い手(または次の担い手)の仕事で、観測役は検知して報告するところまで(決定「無人での後継起動は環境の限界とする」)。報告の末尾に、後継を起こす窓口が打つコマンドを添える: `python3 {pane_script} --role holder --plugin-dir <labの絶対パス> --orch-title '<orchの題>' --orch-activity-id <orchアクティビティのid> --old-name <担い手欄の名前> --old-session-id <担い手欄のsessionId> [--board-title '<根の答えの掲示板の題>']`。起動文は雛形が組むので、観測役は起動文を書かない。--old-pidは分かるときだけ足し、掲示板の題が分かるときだけ--board-titleを付け、分からなければ付けない（雛形が後継に掲示板を探させる）
 
+ERROREDが出たら、報告先へadd_logsで判定スクリプトの出力をそのまま書く。担い手を「続けて」等で起こさない。
+
 CronCreateがauto modeに止められたら(許可が無い環境)、迂回も言い換えての再試行もしない。止められたことを報告先へ書くだけにし、1・2の判定は手動で続ける。
+
+## 子と常駐の見張り(常設の仕事)
+担い手の見張りと同じ周期で、親goalに束縛された子bgと常駐(相談役等)も測る。
+
+1. 対象: get_goal(handle="{parent_goal_handle}")で親goalを読み、conditionsのうちstateがopenで、boundのtypeがactivityの条件の束縛先activityを対象にする。自分のアクティビティ(activity_id={activity_id})は除く。対象を状態節の自由文から読まない
+2. sessionId: get_sessionsでactivity_idが一致する行のcli_session_idを使う(複数あれば`claude agents --json`でcli_pidが生きている行、さらに複数ならupdated_atが新しい行)。get_sessionsは死んだプロセスの行を消すので、引けたsessionIdは対象ごとに覚えておき、今回行が消えていたら覚えたsessionIdを使う。行も覚えたsessionIdも無い対象は空席として扱い、判定も報告もしない
+3. 判定: `python3 {liveness_script} --session-id <sessionId>` に通す。verdictがDEAD・STUCK・ERROREDなら、報告先へadd_logsで対象のアクティビティ名と判定スクリプトの出力をそのまま書き、担い手(担い手欄の今の宛先)へSendMessageで1行知らせる。同じ対象・同じ判定では二重に書かず送らない。OKに戻った対象は送った記録を消し、また止まったら新しく書く
+4. 止まった本人には何も送らない。「続けて」等で起こさない。起こすのは担い手で、観測役は測って報告するところまで。担い手の後継を起こすコマンドはこの報告に添えない
 
 ## 書き先
 数字は報告先(親のorchアクティビティ)へadd_logs、まとまった計数は資材。担い手には変化があったときだけ要約1行
@@ -292,6 +306,7 @@ def build_request(
         consultant_block=consultant_block,
         activity_title=activity_title,
         activity_id=activity_id,
+        parent_goal_handle=parent_goal_handle,
         worktree=worktree,
         branch_line=(f"、ブランチ {branch}" if branch else ""),
         goal_instruction=goal_instruction,
