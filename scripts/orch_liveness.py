@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """orchの担い手(または相談役)のセッションが生きているかを判定する。
 
-`claude agents --json`の行と、transcriptの最終更新時刻・末尾の行から、OK / DEAD / STUCK を
-1行のJSONでstdoutへ出す。
+`claude agents --json`の行と、transcriptの最終更新時刻・末尾の行から、OK / DEAD / STUCK /
+ERRORED を1行のJSONでstdoutへ出す。
 
 - DEAD: sessionIdが一致しpidがある行が無い
 - STUCK: その行(複数あればstartedAtが最も新しい行)のstatusがbusyのまま、
   transcriptが--stuck-minutes分以上更新されておらず、かつtranscriptの末尾が
   ターンの終わりの行(system/turn_duration)でない
+- ERRORED: その行のstatusがidleで、transcriptの末尾の会話行(user/assistant。system行は
+  turn_durationも含めて飛ばす)がAPIエラーの行(isApiErrorMessageの印付き)。接続切れ・
+  使用上限等でターンが途切れ、返事を待っているのではなく止まっている
 - OK: それ以外(transcriptが見つからないときは固まりを判定できないのでOK)
 
 ターンを終えたあとも、裏のshell(Bashのバックグラウンド等)がstatusをbusyに保つことがある。
@@ -24,10 +27,12 @@ import time
 from pathlib import Path
 
 TURN_END = "system/turn_duration"
+API_ERROR = "assistant/api_error"
 
 
 def judge(rows: list[dict], session_id: str, transcript_mtime: float | None,
-          now: float, stuck_minutes: float, tail: str | None = None) -> dict:
+          now: float, stuck_minutes: float, tail: str | None = None,
+          last_message: str | None = None) -> dict:
     live = [r for r in rows if r.get("sessionId") == session_id and r.get("pid")]
     if not live:
         return {"verdict": "DEAD", "session_id": session_id}
@@ -39,15 +44,18 @@ def judge(rows: list[dict], session_id: str, transcript_mtime: float | None,
         result["transcript_age_min"] = round(age_min, 1)
         if row.get("status") == "busy" and age_min >= stuck_minutes and tail != TURN_END:
             result["verdict"] = "STUCK"
+    if row.get("status") == "idle" and last_message == API_ERROR:
+        result["verdict"] = "ERRORED"
     return result
 
 
-def _line_kind(raw: bytes) -> str | None:
+def _line_kind(raw: bytes, messages_only: bool = False) -> str | None:
     """会話の進みを示す行なら種類("assistant/tool_use"等)、それ以外はNone。
 
     attachment・queue-operation・timestampの無い帳簿行(cost-state等)と、turn_duration以外の
     system行(stop_hook_summaryはhookがblockすると後に続くので終わりではない。informationalは
-    待機中にも届く)は会話の進みではないので飛ばす。
+    待機中にも届く)は会話の進みではないので飛ばす。messages_onlyならturn_durationも飛ばす。
+    APIエラーの行はClaude Codeが合成するassistant行で、isApiErrorMessageの印が付く。
     """
     try:
         d = json.loads(raw)
@@ -55,15 +63,17 @@ def _line_kind(raw: bytes) -> str | None:
         return None
     kind = d.get("type")
     if kind == "system":
-        return TURN_END if d.get("subtype") == "turn_duration" else None
+        return TURN_END if d.get("subtype") == "turn_duration" and not messages_only else None
     if kind not in ("user", "assistant"):
         return None
+    if d.get("isApiErrorMessage") is True:
+        return API_ERROR
     content = (d.get("message") or {}).get("content")
     first = content[0].get("type", "text") if isinstance(content, list) and content else "text"
     return f"{kind}/{first}"
 
 
-def transcript_tail(path: Path) -> str | None:
+def transcript_tail(path: Path, messages_only: bool = False) -> str | None:
     """transcript末尾の会話行の種類。末尾から読み、見つかるまで読む範囲を広げる。"""
     size = path.stat().st_size
     chunk = 1 << 16
@@ -74,7 +84,7 @@ def transcript_tail(path: Path) -> str | None:
             if chunk < size:
                 lines = lines[1:]  # 先頭は途中から読んだ行
             for raw in reversed(lines):
-                kind = _line_kind(raw)
+                kind = _line_kind(raw, messages_only)
                 if kind:
                     return kind
             if chunk >= size:
@@ -99,12 +109,14 @@ def main(argv: list[str] | None = None) -> None:
                          check=True).stdout
     transcript = find_transcript(args.session_id, Path(args.projects_dir))
     tail = transcript_tail(transcript) if transcript else None
+    last_message = transcript_tail(transcript, messages_only=True) if transcript else None
     result = judge(json.loads(out), args.session_id,
                    transcript.stat().st_mtime if transcript else None,
-                   time.time(), args.stuck_minutes, tail=tail)
+                   time.time(), args.stuck_minutes, tail=tail, last_message=last_message)
     if transcript:
         result["transcript"] = str(transcript)
         result["transcript_tail"] = tail
+        result["last_message"] = last_message
     print(json.dumps(result, ensure_ascii=False))
 
 

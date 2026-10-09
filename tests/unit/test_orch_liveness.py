@@ -11,6 +11,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from scripts.orch_liveness import (  # noqa: E402
+    API_ERROR,
     TURN_END,
     find_transcript,
     judge,
@@ -34,6 +35,29 @@ _TURN_END_ROWS = [
     {"type": "attachment", "timestamp": "t", "attachment": {"type": "hook_success", "hookName": "Stop"}},
     {"type": "system", "subtype": "stop_hook_summary", "timestamp": "t", "hookCount": 2},
     {"type": "system", "subtype": "turn_duration", "timestamp": "t", "durationMs": 18161},
+]
+
+
+# bg ce7039b3が10/09 04:24 UTCに接続切れで止まり、idleのまま75分放置されたときのtranscript末尾。
+# 実物の行のうち判定に効くフィールドを値ごと写した(実物の複製はしない)
+_CONNECTION_LOST_ROWS = [
+    {"type": "user", "timestamp": "2026-10-09T04:22:47.436Z",
+     "message": {"role": "user", "content": [
+         {"tool_use_id": "toolu_x", "type": "tool_result", "content": "725 passed", "is_error": False}]}},
+    {"type": "attachment", "timestamp": "2026-10-09T04:22:47.701Z",
+     "attachment": {"type": "silent_turn_reminder"}},
+    {"type": "attachment", "timestamp": "2026-10-09T04:22:52.973Z",
+     "attachment": {"type": "deferred_tools_record", "entries": []}},
+    {"type": "assistant", "timestamp": "2026-10-09T04:22:52.971Z",
+     "message": {"model": "claude-opus-5-5", "role": "assistant", "stop_reason": "end_turn",
+                 "content": [{"type": "text", "text": "いまunit全体を回し直してるとこ！"}]}},
+    {"type": "assistant", "timestamp": "2026-10-09T04:24:03.846Z",
+     "message": {"model": "<synthetic>", "role": "assistant", "stop_reason": "stop_sequence",
+                 "content": [{"type": "text", "text": "API Error: Connection lost mid-response. "
+                              "The response above may be incomplete."}]},
+     "error": "server_error", "truncatedAfterOutput": True, "isApiErrorMessage": True},
+    {"type": "system", "subtype": "turn_duration", "timestamp": "2026-10-09T04:24:04.240Z",
+     "durationMs": 651054, "messageCount": 189},
 ]
 
 
@@ -75,6 +99,20 @@ class TestJudge:
     def test_mid_turn_tail_keeps_stuck(self):
         r = judge([_row(status="busy")], "s1", NOW - 26 * 60, NOW, 25, tail="assistant/tool_use")
         assert r["verdict"] == "STUCK"
+
+    def test_errored_when_idle_and_last_message_is_api_error(self):
+        r = judge([_row(status="idle")], "s1", NOW - 75 * 60, NOW, 25, tail=TURN_END,
+                  last_message=API_ERROR)
+        assert (r["verdict"], r["pid"]) == ("ERRORED", 100)
+
+    def test_api_error_while_busy_is_not_errored(self):
+        # busyの間はまだ動いている(再試行中を含む)。固まりはSTUCKの判定に任せる
+        r = judge([_row(status="busy")], "s1", NOW - 60, NOW, 25, tail=TURN_END,
+                  last_message=API_ERROR)
+        assert r["verdict"] == "OK"
+
+    def test_dead_wins_over_api_error(self):
+        assert judge([_row(pid=None)], "s1", NOW, NOW, 25, last_message=API_ERROR)["verdict"] == "DEAD"
 
 
 class TestTranscriptTail:
@@ -132,6 +170,37 @@ class TestTranscriptTail:
                    _msg("assistant", {"type": "tool_use", "name": "Read", "input": {}}),
                    _msg("user", {"type": "tool_result", "content": "x" * 200_000}))
         assert transcript_tail(p) == "user/tool_result"
+
+    def test_ce7039b3_connection_lost_is_errored(self, tmp_path):
+        p = _jsonl(tmp_path / "s.jsonl", *_CONNECTION_LOST_ROWS,
+                   {"type": "cost-state", "totalCostUSD": 3.2})
+        # ターンは終わっている(STUCKの判定は変わらない)が、末尾の会話行はAPIエラー
+        assert transcript_tail(p) == TURN_END
+        last = transcript_tail(p, messages_only=True)
+        assert last == API_ERROR
+        r = judge([_row(status="idle")], "s1", NOW - 75 * 60, NOW, 25,
+                  tail=transcript_tail(p), last_message=last)
+        assert r["verdict"] == "ERRORED"
+
+    def test_woken_after_api_error_is_not_errored(self, tmp_path):
+        # 担い手の「続けて」で再開したら、末尾の会話行はuserに変わる
+        p = _jsonl(tmp_path / "s.jsonl", *_CONNECTION_LOST_ROWS,
+                   {"type": "queue-operation", "operation": "enqueue", "timestamp": "t"},
+                   _msg("user", {"type": "text", "text": "続きから再開して"}))
+        last = transcript_tail(p, messages_only=True)
+        assert last == "user/text"
+        assert judge([_row(status="idle")], "s1", NOW, NOW, 25, last_message=last)["verdict"] == "OK"
+
+    def test_idle_after_question_is_ok(self, tmp_path):
+        # 質問で終えて返事を待っているだけのidleは止まりではない
+        p = _jsonl(tmp_path / "s.jsonl",
+                   _msg("assistant", {"type": "text", "text": "AとBのどちらで進める？"}),
+                   *_TURN_END_ROWS)
+        last = transcript_tail(p, messages_only=True)
+        assert last == "assistant/text"
+        r = judge([_row(status="idle")], "s1", NOW - 600 * 60, NOW, 25,
+                  tail=transcript_tail(p), last_message=last)
+        assert r["verdict"] == "OK"
 
     def test_empty_transcript_has_no_tail(self, tmp_path):
         p = tmp_path / "s.jsonl"
