@@ -10,6 +10,8 @@ signal 記録、並行書き込みの直列化を検証する。
 import threading
 import time
 
+import pytest
+
 from src.db import get_connection
 from src.services import ask_service as ak
 from src.services import goal_service as gs
@@ -1042,3 +1044,124 @@ class TestConcurrencyAndFailure:
         assert len(successes) == 1
         assert len(orphan_rejections) == 1
         assert _linked_activity_count(goal_id) == 1
+
+
+class TestFollowupConditionForDesign:
+    """intent:design のアクティビティに新しい goal を作ると後続起票の条件が足される。"""
+
+    def _act(self, intent: str | None, title: str = "d1") -> int:
+        tags = ["domain:test"] + ([f"intent:{intent}"] if intent else [])
+        related = [{"type": "decision", "ids": [_decision(f"d-{title}")]}] if intent == "implement" else None
+        return add_activity(
+            title=title, description="d", tags=tags, related=related, check_in=False
+        )["activity_id"]
+
+    def _conditions(self, goal_id: int):
+        conn = get_connection()
+        try:
+            return conn.execute(
+                "SELECT * FROM goal_conditions WHERE goal_id = ? ORDER BY id", (goal_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def test_design_appends_followup_condition_last(self, temp_db):
+        act = self._act("design")
+        goal_id = _new_goal(
+            act, conditions=[{"statement": "c1", "actor": "claude"}, {"statement": "c2", "actor": "human"}]
+        )["goal_id_raw"]
+        rows = self._conditions(goal_id)
+        assert [r["statement"] for r in rows[:2]] == ["c1", "c2"]
+        assert len(rows) == 3
+        last = rows[-1]
+        assert "後続の[作業]アクティビティを起票" in last["statement"]
+        assert (last["actor"], last["state"], last["bound_type"], last["note"]) == (
+            "claude", "open", None, None,
+        )
+
+    @pytest.mark.parametrize("intent", ["implement", "discuss", None])
+    def test_other_or_no_intent_does_not_append(self, temp_db, intent):
+        act = self._act(intent)
+        goal_id = _new_goal(act)["goal_id_raw"]
+        assert len(self._conditions(goal_id)) == 1
+
+    def test_alias_of_design_appends(self, temp_db):
+        self._act("design")  # intent:design タグを作る
+        alias_act = add_activity(
+            title="alias", description="d", tags=["domain:test", "intent:blueprint"], check_in=False
+        )["activity_id"]
+        conn = get_connection()
+        try:
+            design_id = conn.execute(
+                "SELECT id FROM tags WHERE namespace='intent' AND name='design'"
+            ).fetchone()["id"]
+            conn.execute(
+                "UPDATE tags SET canonical_id = ? WHERE namespace='intent' AND name='blueprint'",
+                (design_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        goal_id = _new_goal(alias_act, handle="alias-g")["goal_id_raw"]
+        assert len(self._conditions(goal_id)) == 2
+
+    def test_design_and_implement_both_appends(self, temp_db):
+        decision_id = _decision("方針")
+        act = add_activity(
+            title="both",
+            description="d",
+            tags=["domain:test", "intent:design", "intent:implement"],
+            related=[{"type": "decision", "ids": [decision_id]}],
+            check_in=False,
+        )["activity_id"]
+        goal_id = _new_goal(act)["goal_id_raw"]
+        assert len(self._conditions(goal_id)) == 2
+
+    def test_goal_id_form_does_not_append(self, temp_db):
+        goal_id = _new_goal(self._act("design", "d1"), handle="shared")["goal_id_raw"]
+        before = len(self._conditions(goal_id))
+        gs.set_goal(self._act("design", "d2"), {"goal_id": goal_id})
+        assert len(self._conditions(goal_id)) == before
+
+    def test_waiver_form_does_not_append(self, temp_db):
+        act = self._act("design")
+        assert "error" not in gs.set_goal(act, {"waiver": "不要"})
+        conn = get_connection()
+        try:
+            assert conn.execute("SELECT COUNT(*) AS c FROM goal_conditions").fetchone()["c"] == 0
+        finally:
+            conn.close()
+
+    def test_noop_does_not_append(self, temp_db):
+        act = self._act("design")
+        goal_id = _new_goal(act, handle="same")["goal_id_raw"]
+        before = len(self._conditions(goal_id))
+        assert _new_goal(act, handle="same").get("no_op") is True
+        assert len(self._conditions(goal_id)) == before
+
+    def test_replace_appends(self, temp_db):
+        act = self._act("design")
+        first = _new_goal(act, handle="first")["goal_id_raw"]
+        gs.set_goal(self._act("design", "keeper"), {"goal_id": first})  # 孤児化を避ける
+        replaced = gs.set_goal(
+            act,
+            {"new": {"handle": "second", "statement": "s", "conditions": [{"statement": "c", "actor": "claude"}]}},
+            replace=True,
+        )
+        assert len(self._conditions(replaced["goal_id_raw"])) == 2
+
+    def test_missing_activity_is_not_found(self, temp_db):
+        assert _new_goal(99999, handle="nx")["error"]["code"] == "NOT_FOUND"
+
+    def test_open_followup_blocks_judge_then_waived_allows(self, temp_db):
+        act = self._act("design")
+        goal_id = _new_goal(
+            act, conditions=[{"statement": "c1", "actor": "claude", "state": "satisfied", "note": "済"}]
+        )["goal_id_raw"]
+        blocked = gs.judge_goal(goal_id, "achieved")
+        assert blocked["error"]["code"] == "GOAL_NOT_READY"
+        followup = self._conditions(goal_id)[-1]
+        gs.update_goal(
+            goal_id, [{"op": "set", "id": followup["id"], "state": "waived", "note": "後続不要"}]
+        )
+        assert "error" not in gs.judge_goal(goal_id, "achieved")
