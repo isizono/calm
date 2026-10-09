@@ -123,6 +123,10 @@ def main() -> None:
         state = HookState(session_id)
         events = state.read_events()
 
+        # 3.2 人の発話の印（訂正候補）と、外れた記録役の起こし直し。窓口への注意の
+        # 1行は、下のどの出力経路でも先頭に添える
+        correction_line = _handle_corrections(data, session_id, state)
+
         # 3.5 add_ask通知の二重網（add_ask後の回答待ちhookが無いハーネスや、
         # 待機が途切れた場合のフォールバック）。identity解決には一切触れない。他のnudgeより優先する
         # （人間の回答が届いた事実は、記録忘れ等の促しより時宜性が高いため）。
@@ -141,7 +145,7 @@ def main() -> None:
         # 行だけのときは下の人間発話判定・nudge判定へ進み、記録の促しを押し出さない。
         neighbor_lines, neighbor_ids = build_neighbor_ask_lines(session_id)
         if ask_notify_lines:
-            body = "\n".join([*ask_notify_lines, *neighbor_lines])
+            body = "\n".join([*correction_line, *ask_notify_lines, *neighbor_lines])
             mark_neighbor_asks_notified(session_id, neighbor_ids)
             harness.emit_additional_context(_wrap_system_reminder(body))
             return
@@ -149,6 +153,8 @@ def main() -> None:
         def _emit(message: str | None) -> None:
             """neighbor行（あれば）とnudge文面（あれば）を1回の出力にまとめて出す。"""
             parts = []
+            if correction_line:
+                parts.append(_wrap_system_reminder(correction_line[0]))
             if neighbor_lines:
                 parts.append(_wrap_system_reminder("\n".join(neighbor_lines)))
                 mark_neighbor_asks_notified(session_id, neighbor_ids)
@@ -195,6 +201,44 @@ def main() -> None:
         print(f"user_prompt_submit_hook.py error: {e}", file=sys.stderr)
         try_capture_signal(kind="machine_error", source="hook:user_prompt_submit", summary=str(e)[:200])
         harness.emit_empty()
+
+
+def _handle_corrections(data: dict, session_id: str, state: HookState) -> list[str]:
+    """印を書き、記録役を起こし直し、新しく積まれた未教訓化があれば注意の1行を返す。
+
+    どれも失敗してよい（他の配達を止めない）。注意はその訂正を受けたセッションだけに出し、
+    止めはしない。同じ件は一度だけ知らせる。
+    """
+    from hooks.correction_marks import append_mark, is_human_prompt, new_unresolved
+
+    prompt = data.get("prompt")
+    if not is_human_prompt(prompt):
+        return []
+    try:
+        if data.get("prompt_id"):
+            append_mark(session_id, data["prompt_id"], prompt)
+    except Exception as e:
+        print(f"user_prompt_submit_hook.py mark error: {e}", file=sys.stderr)
+    try:
+        from hooks.recorder_autostart_hook import revive_if_detached
+
+        revive_if_detached(data)
+    except Exception as e:
+        print(f"user_prompt_submit_hook.py recorder revive error: {e}", file=sys.stderr)
+    try:
+        new = new_unresolved(state, "notice", session_id)
+    except Exception as e:
+        print(f"user_prompt_submit_hook.py correction lookup error: {e}", file=sys.stderr)
+        return []
+    if not new:
+        return []
+    state.add_correction_ids("notice", {i["id"] for i in new})
+    titles = "／".join(i["title"] for i in new[:3])
+    return [
+        f"このセッションで受けた人の訂正が、記録役により未教訓化として{len(new)}件積まれました（{titles}）。"
+        "教訓にして届けるところは教訓化役が受け持っています（届け先を書くのは教訓化役が呼ぶ経緯なしの個体、"
+        "届いたかを測るのは観測役）。このセッションで教訓を書く必要はありません。"
+    ]
 
 
 def _rewrite_events(state: HookState, events: list[dict]) -> None:

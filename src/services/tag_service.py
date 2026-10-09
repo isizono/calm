@@ -6,7 +6,11 @@ from typing import Literal
 
 from src.config import TAG_NOTES_DECAY_DAYS
 from src.db import get_connection, row_to_dict
-from src.infra.session_identity import delivery_key, evict_for_new_key
+from src.infra.session_identity import (
+    delivery_key,
+    evict_for_new_key,
+    get_caller_session_id,
+)
 from src.services.decay_utils import is_decay_eligible
 
 VALID_NAMESPACES = {'', 'domain', 'intent', 'glossary', 'layer'}
@@ -960,6 +964,8 @@ def update_tag(
                 (notes, tag_id),
             )
             conn.commit()
+            stamp = conn.execute("SELECT notes_updated_at FROM tags WHERE id = ?", (tag_id,)).fetchone()[0]
+            mark_own_notes_update(get_caller_session_id(), tag_str, stamp)
             return {"tag": tag_str, "notes": notes, "updated": True}
 
         # --- archived 更新 ---
@@ -1195,44 +1201,112 @@ def get_available_intents() -> list[dict]:
 # 遭遇時注入（Tag Notes Injection）
 # ========================================
 
-# セッション別の注入済みタグ追跡（ctx.session_idキー）
+# セッション別の配信済みタグ追跡（delivery_keyキー）。値は「タグ → 配信したときの
+# notes_updated_at」で、今のnotes_updated_atのほうが新しければ未配信とみなして
+# 全文を配り直す（notesの書き換えを生きているセッションへ1回届けるため）。
+# notes_updated_atがNULLのタグは""として記録し、最も古いものとして比べる。
+# notes_updated_atは秒単位なので、同じ秒に2回書き換えると、後の書き換えは配り直さない。
+# _injected_tagsはcheck_in・書き込み応答（mark=True）の帳簿、_get_delivered_tagsは
+# 読み取り経路（mark=False）専用の帳簿。読み取り経路は両方を見て自分の帳簿にだけ書く。
+# 読み取り経路で先に届いたタグも、mark=True経路では1回届く。
 # セッション終了はこのモジュールに通知されないため、上限超過時に挿入順の
 # 最古セッションから追い出す（放置するとセッション数ぶん永久に成長する）。
 # 追い出された長寿セッションは同じタグの notes を再度受け取るだけで実害はない。
 # 追い出しは check-then-act（len 判定 → del）でGILのアトミック性に頼れないため、
-# ツール並行実行下の同時到達を _injected_tags_lock で直列化する。
-_injected_tags: dict[str, set[str]] = {}
+# ツール並行実行下の同時到達を _injected_tags_lock で直列化する（2つの帳簿で共用）。
+_injected_tags: dict[str, dict[str, str]] = {}
+_get_delivered_tags: dict[str, dict[str, str]] = {}
 _injected_tags_lock = threading.Lock()
 _INJECTED_TAGS_MAX_SESSIONS = 256
 
-# check_inの字数の天井で畳んだタグのうち、省略ポインタを出し済みのもの（delivery_keyキー）。
-# 畳んだタグは全文が届いていないため_injected_tagsには入れず、ポインタを繰り返し
-# 出さないためだけにここへ記録する。_injected_tagsとは別に退避されるので、
-# 2つの台帳の寿命は一致しない（退避されたセッションはポインタをもう一度出すだけで実害はない）。
-_fold_pointer_shown: dict[str, set[str]] = {}
+# check_inの字数の天井で畳んだタグのうち、省略ポインタを出し済みのもの（delivery_keyキー、
+# 値はポインタを出したときのnotes_updated_at）。畳んだタグは全文が届いていないため
+# どちらの帳簿にも入れず、ポインタを繰り返し出さないためだけにここへ記録する。
+# _injected_tagsとは別に退避されるので、帳簿どうしの寿命は一致しない
+# （退避されたセッションはポインタをもう一度出すだけで実害はない）。
+_fold_pointer_shown: dict[str, dict[str, str]] = {}
 _fold_pointer_shown_lock = threading.Lock()
+
+
+def _notes_stamp(notes_updated_at: str | None) -> str:
+    return notes_updated_at or ""
+
+
+def _is_delivered(ledger: dict[str, str] | None, tag_str: str, stamp: str) -> bool:
+    """帳簿に記録した版が、今のnotes（stamp）と同じか新しければTrue。"""
+    if not ledger:
+        return False
+    recorded = ledger.get(tag_str)
+    return recorded is not None and recorded >= stamp
+
+
+def _ledger_for(store: dict[str, dict[str, str]], key: str) -> dict[str, str]:
+    """storeのkeyの帳簿を返す（無ければ作る）。呼び出し側がstoreのロックを保持すること。"""
+    if key not in store:
+        evict_for_new_key(store, _INJECTED_TAGS_MAX_SESSIONS)
+    return store.setdefault(key, {})
 
 
 def release_folded_tag(session_id: str | None, tag_str: str) -> bool:
     """天井で畳んだタグを配信済みから外し、ポインタの初回表示かどうかを返す。
 
     collect_tag_notes_for_injectionは全文を返す前提で_injected_tagsに登録するため、
-    畳んで全文が届かなかったタグはここで登録を外し、次のmark=True経路で全文が届くようにする。
-    戻り値は、このセッション（サブエージェントは別キー）でそのタグのポインタを
-    まだ出していないならTrue。session_idが解決できない場合は記録せずTrueを返す。
+    畳んで全文が届かなかったタグはここで登録を外し、次の経路で全文が届くようにする。
+    戻り値は、このセッション（サブエージェントは別キー）でそのタグの今の版の
+    ポインタをまだ出していないならTrue（notesが書き換わった後に畳まれたら、
+    もう一度Trueになる）。session_idが解決できない場合は記録せずTrueを返す。
     """
     key = delivery_key(session_id)
     if key is None:
         return True
     with _injected_tags_lock:
-        _injected_tags.get(key, set()).discard(tag_str)
+        stamp = _injected_tags.get(key, {}).pop(tag_str, "")
     with _fold_pointer_shown_lock:
-        if key not in _fold_pointer_shown:
-            evict_for_new_key(_fold_pointer_shown, _INJECTED_TAGS_MAX_SESSIONS)
-        shown = _fold_pointer_shown.setdefault(key, set())
-        first = tag_str not in shown
-        shown.add(tag_str)
+        shown = _ledger_for(_fold_pointer_shown, key)
+        first = not _is_delivered(shown, tag_str, stamp)
+        shown[tag_str] = max(stamp, shown.get(tag_str, ""))
         return first
+
+
+def mark_own_notes_update(session_id: str | None, tag_str: str, notes_updated_at: str | None) -> None:
+    """notesを書き換えた本人の帳簿の記録を新しい版に上書きし、自分の更新が戻ってこないようにする。
+
+    記録が無いタグは足さない（書き換えた本人でも、まだ受け取っていないnotesは届く）。
+    サブエージェントは別キーなので、サブエージェントの書き換えは親へ1回再配信される。
+    """
+    key = delivery_key(session_id)
+    if key is None:
+        return
+    stamp = _notes_stamp(notes_updated_at)
+    for store, lock in (
+        (_injected_tags, _injected_tags_lock),
+        (_get_delivered_tags, _injected_tags_lock),
+        (_fold_pointer_shown, _fold_pointer_shown_lock),
+    ):
+        with lock:
+            ledger = store.get(key)
+            if ledger is not None and tag_str in ledger:
+                ledger[tag_str] = stamp
+
+
+def reset_delivery(session_id: str) -> int:
+    """そのセッションと配下のサブエージェントの配信済み記録（畳んだポインタも含む）を消す。
+
+    Claude Code側で文脈が入れ替わった（compact・/clear・resume）後に、手元に無くなったnotesを
+    もう一度届けるため。消したキーの数を返す。
+    """
+    prefix = f"{session_id}#"
+    removed = 0
+    for store, lock in (
+        (_injected_tags, _injected_tags_lock),
+        (_get_delivered_tags, _injected_tags_lock),
+        (_fold_pointer_shown, _fold_pointer_shown_lock),
+    ):
+        with lock:
+            for key in [k for k in store if k == session_id or k.startswith(prefix)]:
+                del store[key]
+                removed += 1
+    return removed
 
 
 def _max_timestamp(a: str | None, b: str | None) -> str | None:
@@ -1254,70 +1328,43 @@ def collect_tag_notes_for_injection(
     always_inject_namespaces: list[str] | None = None,
     mark: bool = True,
 ) -> list[dict] | None:
-    """未注入タグの notes を収集し、注入済みとしてマークする。
+    """未配信タグの notes を収集し、配信済みとして記録する。
 
     Args:
         conn: DB接続
         tag_strings: タグ文字列リスト（例: ["domain:calm", "intent:design"]）
         session_id: 呼び出し元の恒久識別子（get_caller_session_id()の解決結果）。
-            セッション別に注入済みを管理する。Noneの場合は_injected_tagsを読み書き
-            せず（mark=False相当）、毎回notesを全文返す。共有キーへの相乗りはしない
+            セッション別に配信済みを管理する。Noneの場合はどちらの帳簿も読み書き
+            せず、毎回notesを全文返す。共有キーへの相乗りはしない
         always_inject_namespaces: 常時注入するnamespaceのリスト（例: ["intent"]）。
-            このnamespaceに属するタグは _injected_tags チェックをスキップし、
-            毎回 notes を返す。_injected_tags には登録しない。
-        mark: True（デフォルト）の場合、_injected_tags のチェックと更新を行う
-            （ただしsession_idがNoneならmark指定に関わらずFalse相当になる）。
-            False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
-            last_injected_at の更新（decay述語のトラッキング）も連動する。
+            このnamespaceに属するタグは帳簿を見ずに毎回 notes を返し、帳簿にも登録しない。
+        mark: True（デフォルト、check_in・書き込み応答）の場合、_injected_tagsだけを見て、
+            返したタグを_injected_tagsに記録する。last_injected_at も更新する。
+            False（読み取り経路）の場合、_injected_tagsと_get_delivered_tagsの両方を見て、
+            返したタグを_get_delivered_tagsにだけ記録する。last_injected_at は更新しない。
+            どちらの帳簿も「タグ → 配ったときのnotes_updated_at」で、notesがその後に
+            書き換わったタグは未配信とみなして全文を返し直す。
 
     Returns:
         notes があるタグの一覧。なければ None
         [{"tag": "domain:calm", "notes": "..."}, ...]
         notes が空文字列（全セクションを退避し尽くした後の tags.notes 等）のタグは
-        対象外にする（NULL 判定だけでは拾えないため）。
+        対象外にする（NULL 判定だけでは拾えないため）。帳簿にも記録しない。
         タグ作成からTAG_NOTES_DECAY_DAYSを超え、かつ全文配信実績（last_injected_at）と
         notes本文の最終更新（notes_updated_at）のどちらも同日数以内に更新されていない
         タグは、notesの全文の代わりに1行ポインタ文言へ縮退する
         （レンダー時decay。search_tags等の返却対象からは除外しない）。
+        decayのポインタはそのタグの意図された最終形なので、全文と同じく帳簿に記録する。
         always_inject_namespaces対象のタグは常時全文注入という既存契約が優先されるため、
         decay判定の対象から除外される（ポインタ文言に縮退しない）。
     """
     # session_idが解決できない呼び出し（mainのMCPリクエストコンテキスト外）は
-    # _injected_tagsを読み書きしない（mark=False相当）。共有キーへの相乗りはしない。
+    # 帳簿を読み書きしない。共有キーへの相乗りはしない。
     # サブエージェントからの呼び出しは親と別キーで追跡する（delivery_key参照）。
     key = delivery_key(session_id)
-    effective_mark = mark and key is not None
     always_ns = set(always_inject_namespaces) if always_inject_namespaces else set()
 
-    # always_inject対象とそれ以外を分離（パース結果も保持）
-    always_parsed = []
-    normal_tags = []
-    normal_parsed = []
-    for t in tag_strings:
-        ns, name = parse_tag(t)
-        if ns in always_ns:
-            always_parsed.append((ns, name))
-        else:
-            normal_tags.append(t)
-            normal_parsed.append((ns, name))
-
-    if effective_mark:
-        with _injected_tags_lock:
-            if key not in _injected_tags:
-                evict_for_new_key(_injected_tags, _INJECTED_TAGS_MAX_SESSIONS)
-            session_set = _injected_tags.setdefault(key, set())
-            new_normal = [
-                (t, p) for t, p in zip(normal_tags, normal_parsed, strict=False)
-                if t not in session_set
-            ]
-            session_set.update(t for t, _ in new_normal)
-    else:
-        # mark=False（またはsession_id未解決）: 全タグをクエリ対象にし、
-        # _injected_tags は更新しない
-        new_normal = list(zip(normal_tags, normal_parsed, strict=False))
-
-    # クエリ対象: new_normal + always（always_tagsは毎回クエリ）
-    parsed = [p for _, p in new_normal] + always_parsed
+    parsed = [parse_tag(t) for t in tag_strings]
     if not parsed:
         return None
     placeholders = " OR ".join(["(namespace = ? AND name = ?)"] * len(parsed))
@@ -1328,6 +1375,24 @@ def collect_tag_notes_for_injection(
         f"WHERE ({placeholders}) AND notes IS NOT NULL AND LENGTH(notes) > 0 AND archived_at IS NULL",
         params
     ).fetchall()
+
+    if key is not None:
+        # 帳簿の確認と記録を同じロックの中で行い、並行する呼び出しが同じタグを二重に配らないようにする
+        with _injected_tags_lock:
+            own = _ledger_for(_injected_tags if mark else _get_delivered_tags, key)
+            seen = [own] if mark else [own, _injected_tags.get(key)]
+            claimed = []
+            for row in rows:
+                if row["namespace"] in always_ns:
+                    claimed.append(row)
+                    continue
+                tag_str = f"{row['namespace']}:{row['name']}" if row["namespace"] else row["name"]
+                stamp = _notes_stamp(row["notes_updated_at"])
+                if any(_is_delivered(ledger, tag_str, stamp) for ledger in seen):
+                    continue
+                own[tag_str] = stamp
+                claimed.append(row)
+        rows = claimed
 
     if not rows:
         return None
@@ -1351,11 +1416,11 @@ def collect_tag_notes_for_injection(
         results.append({"tag": tag_str, "notes": row["notes"]})
         fresh_ids.append(row["id"])
 
-    if effective_mark and fresh_ids:
+    if mark and key is not None and fresh_ids:
         # 中間commit: resolve_tags（同ファイル内、force_new_tags/新規作成分岐）と同じ理由
         # （呼び出し元の共有connに対する後続処理への影響回避）で、ここで先にcommitする。
-        # mark=False（またはsession_id未解決）の読み取り専用経路ではlast_injected_atも
-        # 更新しない（mark引数が副作用全般を制御する既存契約に合わせる）。
+        # mark=False（またはsession_id未解決）の経路ではlast_injected_atを更新しない
+        # （decayの鮮度時計は自動注入の配信実績だけで動かす）。
         placeholders_ids = ",".join("?" * len(fresh_ids))
         conn.execute(
             f"UPDATE tags SET last_injected_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders_ids})",

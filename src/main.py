@@ -63,6 +63,7 @@ from src.services.tag_analysis_service import analyze_tags as _analyze_tags
 from src.services.tag_service import (
     collect_tag_notes_for_injection,
     get_archived_tags_for_strings,
+    reset_delivery,
 )
 from src.services.tag_service import (
     demote_tag_notes as _demote_tag_notes,
@@ -124,7 +125,9 @@ def _maybe_inject_tag_notes(result: dict, tag_strings: list[str], mark: bool = T
     check_in経路はalways_inject_namespacesで常時注入が保証されるため問題ない。
 
     Args:
-        mark: False の場合、_injected_tags を参照も更新もしない（読み取り経路用）。
+        mark: False の場合は読み取り経路として扱う。check_in・書き込み応答で配った
+            タグも読み取り経路で配ったタグも返さず、返したタグは読み取り経路専用の
+            帳簿にだけ記録する（後のcheck_in・書き込み応答での配信を奪わない）。
     """
     session_id = get_caller_session_id()
     with contextlib.closing(get_connection()) as conn:
@@ -1600,7 +1603,8 @@ def check_in(
 
     Returns:
         5つの枠（anchor: {activity, pinned} / control: {goal, asks,
-        decision_candidates, dependencies} / context: {topics, activities, decisions, latest_log,
+        decision_candidates, unlearned_corrections, dependencies} / context: {topics, activities,
+        decisions, latest_log,
         materials} / catalog: {logs, map} / env: {tag_notes, hints, coverage,
         session, flow_guide}）に分けて返す。中身が空の枠・キーは省く
         （anchor.activity・control.goal・env.coverage・env.sessionは常に置く）。
@@ -1610,6 +1614,8 @@ def check_in(
         control.asks.awaiting_triageが1件以上あればtriage_askで振り分けること。
         control.decision_candidatesは記録役が退避した閉じていない決定事項の候補
         （guideに閉じ方がある。decisionと結ぶかretractすると出なくなる）。
+        control.unlearned_correctionsは記録役が積んだ未解消の人の訂正（届け先
+        lesson-deliveryと観測lesson-observedの記録が両方結ばれると出なくなる）。
         env.session.alias_collisionがtrueならユーザーに伝えること。
         応答全体が10,000字を超えるとtruncatedキーが付く（cuts[].sectionは
         "anchor.pinned"のようなドット区切りパス）。control・env.tag_notesは
@@ -3116,6 +3122,19 @@ async def health(_request: Request) -> JSONResponse:
     })
 
 
+@mcp.custom_route("/session/reset-delivery", methods=["POST"])
+async def session_reset_delivery(request: Request) -> JSONResponse:
+    """セッションのtag notes配信済み記録を消す（SessionStart hookがcompact・/clear・resumeの後に呼ぶ）"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    session_id = body.get("session_id") if isinstance(body, dict) else None
+    if not session_id or not isinstance(session_id, str):
+        return JSONResponse({"error": "session_id is required (string)"}, status_code=400)
+    return JSONResponse({"removed": reset_delivery(session_id)})
+
+
 # セッションエンドポイント（HTTPモード用カスタムルート）
 @mcp.custom_route("/session/register", methods=["POST"])
 async def session_register(request: Request) -> JSONResponse:
@@ -3368,6 +3387,10 @@ if __name__ == "__main__":
                 shutdown_callback=_shutdown_server,
             )
             _staleness_watchdog.start()
+
+        from src.services.holder_watch_service import HolderWatch
+
+        HolderWatch().start()
 
         try:
             _start_embedding_warmup()

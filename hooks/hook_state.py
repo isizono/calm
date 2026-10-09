@@ -165,6 +165,16 @@ class HookState:
         merged = sorted(self.get_notified_ask_ids() | set(ask_ids))
         self._write(self._path("notified_ask_ids"), "\n".join(str(a) for a in merged))
 
+    # --- 未教訓化の件として既に知らせた・止めたmaterial id一覧（kind: notice / stop） ---
+
+    def get_correction_ids(self, kind: str) -> set[int]:
+        content = self._read_str(self._path(f"correction_{kind}_ids")) or ""
+        return {int(x) for x in content.split(",") if x.strip().isdigit()}
+
+    def add_correction_ids(self, kind: str, ids: set[int]) -> None:
+        merged = sorted(self.get_correction_ids(kind) | ids)
+        self._write(self._path(f"correction_{kind}_ids"), ",".join(str(i) for i in merged))
+
     # --- tracked_ask_ids（このセッションがadd_askし通知待ちで追跡中のask_id一覧） ---
     #
     # add_ask/unsubscribe_askの呼び出し検出（hooks/hook_transcript.py
