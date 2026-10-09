@@ -169,6 +169,15 @@ class TestBuildRequest:
         assert "「交代せよ」を送る" in watch
         assert "同じ相手に二重に送らない" in watch
 
+    def test_observer_dead_report_hands_successor_the_attack_first_step(self):
+        watch = _build(role="observer").split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        dead = next(line for line in watch.splitlines() if line.startswith("DEADかSTUCKが出たら"))
+        # 観測役は後継を起こさず、報告を見て代わる窓口に状態節より先の攻撃を渡すだけ
+        assert "観測役は検知して報告するところまで" in dead
+        assert "代わる節の手順1から始める: check_inより前に" in dead
+        assert "要点節(3,000字まで)だけを読み" in dead
+        assert "条文番号と場面の主語付きで掲示板に書いてから代わる" in dead
+
     def test_observer_role_requires_holder_values(self):
         with pytest.raises(ValueError):
             build_request(
