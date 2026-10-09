@@ -254,9 +254,9 @@ sync-memoryを実行する窓口が、このorchの担い手で、ユーザー�
 
 ## 世代交代
 
-担い手は、次のどれかに当たったら交代する。測るのは本人でなく相手側（観測役が担い手を測る）。
+担い手は、次のどれかに当たったら交代に入る。測るのは本人でなく相手側（観測役が担い手を測る）。
 
-- 最後のassistantのusageで、input_tokens・cache_read_input_tokens・cache_creation_input_tokensの合計が30万を超えた
+- 最後のassistantのusageで、input_tokens・cache_read_input_tokens・cache_creation_input_tokensの合計が33万を超えた（準備に入る線。ここでsync-memoryを始め、38万に届く前に交代を済ませる）
 - 圧縮が1回でもあった
 - セッション開始後にskills/orchが変わった（観測役には当たらない。skill本文の変更は呼び直しで足りるかを実測中）
 
@@ -268,7 +268,7 @@ sync-memoryを実行する窓口が、このorchの担い手で、ユーザー�
 
 1. 状態節（担い手・bg表・約束・預かり・反映待ち）と、あれば目的節・現在地節を上書きで最新にする。自分宛てに届く予定の報告（走っているサブエージェントやbg）は、届く先が無くなるので、待つか、報告先をCALMのログに変えるよう伝える
 2. sync-memoryを標準形で実行する（訂正の拾い直しを含む）
-3. 旧担い手が、中央ペインを一時的に割り（`split-window`）、そのペインに`send-keys`で後継を起こす。コマンドは `cd ~/workspace && claude <自分と同じ起動フラグ> '<orchの題>のorch続けて。旧担い手は<名前>（sessionId <id>）。最初の手で、orchアクティビティ（id <orchアクティビティのid>）の説明の全文をget_by_idsで取り、「担い手: 」で始まる行だけを、自分の名前・sessionId・今の時刻で「担い手: 名前（sessionId 値）／時刻」の形に置き換え、update_activityで説明を書き戻す（名前とsessionIdはclaude agents --jsonでpidが$CLAUDE_PIDの行から取る）。他の行は読まずにそのまま残す。次に、check_inより前に、根の答えの掲示板「<掲示板の題>」の最新の版の要点節（3,000字まで）だけを読み、壊れる場面を1つ掲示板に書いてから代わる。題は「条文<番号> / <場面の主語>: <壊れる場面の要約>」の形にする。版はsearch（keyword「根の答え」、tags=["board","root-answer"]、entity_type=log）の結果から作成時刻が最も新しい1本を選びget_by_idsで読む。書き終えるまで、check_in・get_logs・orchの説明の他の行と掲示板の他の投稿は読まない'`。「次に、check_inより前に」以降は、orchが根の答えの掲示板（今の答えの版を投稿で重ねるboardトピック）を持つときだけ付ける。後継はorch skillを読む前にこの段を踏むので、担い手欄の書き方と版の読み方は起動の文に書き切る（後継の手順は[代わる](#代わる)の1と2と同じ）。自分の起動フラグは`ps -o args= -p $CLAUDE_PID`で読んで同じものを渡す
+3. 旧担い手が、中央ペインを一時的に割り（`split-window`）、そのペインに`send-keys`で後継を起こす。コマンドは `cd ~/workspace && python3 <labの絶対パス>/scripts/pane_claude.py --role holder <自分と同じ起動フラグ> '<orchの題>のorch続けて。旧担い手は<名前>（sessionId <id>）。最初の手で、orchアクティビティ（id <orchアクティビティのid>）の説明の全文をget_by_idsで取り、「担い手: 」で始まる行だけを、自分の名前・sessionId・今の時刻で「担い手: 名前（sessionId 値）／時刻」の形に置き換え、update_activityで説明を書き戻す（名前とsessionIdはclaude agents --jsonでpidが$CLAUDE_PIDの行から取る）。他の行は読まずにそのまま残す。次に、check_inより前に、根の答えの掲示板「<掲示板の題>」の最新の版の要点節（3,000字まで）だけを読み、壊れる場面を1つ掲示板に書いてから代わる。題は「条文<番号> / <場面の主語>: <壊れる場面の要約>」の形にする。版はsearch（keyword「根の答え」、tags=["board","root-answer"]、entity_type=log）の結果から作成時刻が最も新しい1本を選びget_by_idsで読む。書き終えるまで、check_in・get_logs・orchの説明の他の行と掲示板の他の投稿は読まない'`。「次に、check_inより前に」以降は、orchが根の答えの掲示板（今の答えの版を投稿で重ねるboardトピック）を持つときだけ付ける。後継はorch skillを読む前にこの段を踏むので、担い手欄の書き方と版の読み方は起動の文に書き切る（後継の手順は[代わる](#代わる)の1と2と同じ）。自分の起動フラグは`ps -o args= -p $CLAUDE_PID`で読んで同じものを渡す（`--plugin-dir <labの絶対パス>`を含める。落とすとlabの仕組みを持たずに生まれる）。`claude`を直接打たず、ラッパー`pane_claude.py`を通す。ラッパーは担い手以外の返事待ちの自動askを切り、tmuxサーバーから継承されるCLAUDE_CODE_SESSION_IDを外す
 4. 旧担い手は、5分以内に`claude agents --json`に新しいinteractiveの行が出て担い手欄が書き換わるのを見届ける。書き換わらなければ担い手を続け、朝の一覧に載せる。再試行は1回まで
 5. 後継は次の順で行う: [代わる](#代わる)の手順で、担い手欄だけを自分に書き換え→版の要点節を読んで掲示板に壊れる場面を書き→`check_in`→状態節の更新時刻以降のログを読み→[担い手になった手番で仕込むもの](#担い手になった手番で仕込むもの)を仕込む→観測役・相談役へ「担い手が代わった（名前・sessionId）」をSendMessageで知らせる→旧担い手を止める（`kill -TERM <pid>`）→`swap-pane`で自分を中央に入れ、旧ペインを`kill-pane`し、タイトルを付け直す
    - 旧担い手がtmuxの外（iTerm2の普通のタブ）にいたときだけ: 止める前に`ps -o tty= -p <pid>`でttyを控え、止めた後に残るのがlogin・zshだけなのを`ps -t <tty>`で確かめ、osascriptでiTerm2のsessionsからtty一致の1つだけを`close`する

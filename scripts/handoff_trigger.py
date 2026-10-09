@@ -32,7 +32,7 @@ if str(_project_root) not in sys.path:
 
 from scripts.orch_liveness import find_transcript  # noqa: E402
 
-_DEFAULT_THRESHOLD = 300_000
+_DEFAULT_THRESHOLD = 330_000
 _DEFAULT_SKILL_PATH = _project_root / "skills" / "orch" / "SKILL.md"
 
 
