@@ -177,6 +177,8 @@ class TestBuildRequest:
         assert "代わる節の手順1から始める: check_inより前に" in dead
         assert "要点節(3,000字まで)だけを読み" in dead
         assert "条文番号と場面の主語付きで掲示板に書いてから代わる" in dead
+        # 後継はorch skillを読む前にこの段を踏むので、読み方も報告の1行に書き切る
+        assert "書き終えるまで、check_in・get_logs・orchの説明と掲示板の他の投稿は読まない" in dead
 
     def test_observer_role_requires_holder_values(self):
         with pytest.raises(ValueError):
