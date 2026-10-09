@@ -1,0 +1,12 @@
+${orch_title}のorch続けて。orchアクティビティのidは${orch_activity_id}。旧担い手は${old_name}（sessionId ${old_session_id}${old_extra}）。
+この起動文はscripts/templates/holder_launch.txtから組まれている。orch skillの「代わる」節も読み直し、食い違うときは「代わる」節に従う。
+最初の手は次の順で行う。順番を変えない。
+* ToolSearchで、ローカルのCALM（mcp__plugin_calm_calm__）のreplace_holder_linesを探して読み込む。見つからないとき（サーバーの再起動待ち）は、get_by_idsで説明の全文を取り、「担い手: 」で始まる全行だけを次の手の形に置き換えてupdate_activityで書き戻す（他の行は読まない）。この場合、置き換える前の更新時刻を、次の手のbody_changed_atの代わりに控える。
+* 担い手欄を書き換える。replace_holder_lines(activity_id=${orch_activity_id}, lines=["担い手: 名前（sessionId 値）／時刻"])だけを呼ぶ（前の手の代替経路をとったときは、その経路で書く）。名前とsessionIdは`claude agents --json`でpidが自分のclaudeのpid（Bashで`echo $$CLAUDE_PID`して数字を確かめる）の行から取り、時刻は今の時刻。応答のbody_changed_at（担い手欄を除く本文が最後に変わった時刻）を控える。holder_warningsがあれば読んで従う。
+* [掲示板] 根の答えの掲示板「${board_title}」の最新の版の要点節（3,000字まで）だけを読み、壊れる場面を1つ掲示板に書く。題は「条文<番号> / <場面の主語>: <壊れる場面の要約>」の形にする。版はsearch（keyword「根の答え」、tags=["board","root-answer"]、entity_type=log）の結果から作成時刻が最も新しい1本を選びget_by_idsで読む。書き終えるまで、check_in・get_logs・orchの説明と掲示板の他の投稿は読まない。
+* [掲示板なし] 掲示板の題が渡されていない。orchの題をキーワードに素タグboardのトピックをsearchし、説明にこのorchの題がある掲示板があれば、orch skillの「代わる」節の手順2に従って壊れる場面を1つ書く。見つからなければこの手を飛ばす。
+* get_timeline(activity_id=${orch_activity_id}, order="desc")で記録の題の一覧を引き、body_changed_atより古い項目が出たところで止める。
+* check_in(activity_id=${orch_activity_id})する。
+* 前の手の一覧のうち、読むべきログ（空席中のbgの報告を含む）をget_by_idsで読む。
+* `claude agents --json`でbgの生死を見直し、報告済みで次の指示を待つbgのうち要らないものを止める。
+* orch skillの「担い手になった手番で仕込むもの」を仕込み、観測役・相談役へ「担い手が代わった（名前・sessionId）」をSendMessageで知らせ、旧担い手を止める（世代交代の手順5）。

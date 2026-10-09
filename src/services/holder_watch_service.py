@@ -66,6 +66,10 @@ def _read_float_env(name: str, default: float) -> float:
     return value
 
 
+def is_holder_line(line: str) -> bool:
+    return _HOLDER_LINE_RE.match(line) is not None
+
+
 def _holder_line(description: str | None) -> str | None:
     # 常駐の表などにもsessionIdが並ぶので、最初の担い手行だけを読む
     m = _HOLDER_LINE_RE.search(description or "")
@@ -249,8 +253,115 @@ def check_once(dead_sec: float, stale_sec: float, seen_alive: set[tuple[int, str
     return fired
 
 
-def handoff_warnings(old_description: str | None, new_description: str) -> list[str]:
-    """担い手欄のsessionIdが書き換わるときの警告。書き込みは止めない。"""
+def _new_job_ids(old_description: str | None, new_description: str | None) -> set[str]:
+    return set(_JOB_ID_RE.findall(new_description or "")) - set(_JOB_ID_RE.findall(old_description or ""))
+
+
+def replace_holder_lines(description: str | None, lines: list[str]) -> str:
+    """説明の「担い手: 」で始まる全行を差し替える。最初の担い手行の位置にlinesを置き、
+    残りの担い手行は消す。担い手行が無ければ先頭の見出し行の直後（見出しが無ければ先頭）に置く。
+    """
+    text = description or ""
+    src = text.split("\n")
+    out: list[str] = []
+    placed = False
+    for line in src:
+        if _HOLDER_LINE_RE.match(line):
+            if not placed:
+                out.extend(lines)
+                placed = True
+            continue
+        out.append(line)
+    if not placed:
+        at = 1 if out and out[0].startswith("#") else 0
+        out[at:at] = lines
+    return "\n".join(out)
+
+
+# 担い手欄の差し替えから、新しい起こし直しのjob idが状態節に載るまで待つ秒数
+CRON_GRACE_SEC = 900
+CRON_SIGNAL_KIND = "custom:holder-no-cron"
+
+
+def expect_cron(activity_id: int, old_description: str | None, new_description: str,
+                now: float | None = None) -> None:
+    """担い手欄のsessionIdが変わった差し替えの後、見張りが起こし直しの仕込みを確かめる対象に入れる。
+
+    待ちはDBに持つ（サーバーの再起動や、見張りを持たないリモートサーバー経由の差し替えでも消えない）。
+    """
+    new_sid = holder_session_id(new_description)
+    if new_sid is None or new_sid == holder_session_id(old_description):
+        return
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO holder_cron_pending (activity_id, session_id, replaced_at, base_description)"
+            " VALUES (?, ?, ?, ?)",
+            (activity_id, new_sid, time.time() if now is None else now, old_description or ""),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def check_cron_once(grace_sec: float, now: float | None = None) -> list[dict]:
+    """差し替えから猶予を過ぎても新しい起こし直しのjob idが状態節に無ければ、askとsignalを1回立てる。"""
+    now = time.time() if now is None else now
+    fired = []
+    conn = get_connection()
+    try:
+        orch_ids = {r["id"] for r in _orch_activities(conn)}
+        for row in conn.execute("SELECT * FROM holder_cron_pending").fetchall():
+            activity_id, sid, at, base = (
+                row["activity_id"], row["session_id"], row["replaced_at"], row["base_description"])
+            desc_row = conn.execute(
+                "SELECT title, description FROM activities WHERE id = ?", (activity_id,)).fetchone()
+            desc = desc_row["description"] if desc_row else None
+            done = (activity_id not in orch_ids or holder_session_id(desc) != sid
+                    or bool(_new_job_ids(base, desc)))
+            if not done and now - at < grace_sec:
+                continue
+            if not done:
+                minutes = f"{(now - at) / 60:.0f}"
+                reason = f"担い手欄の差し替えから{minutes}分たっても状態節に新しい起こし直し（CronCreate）のjob idが無い"
+                # askを先に立てる(check_onceと同じ理由)。失敗したら待ちを残して次の周で再試行する
+                ask = ask_service.add_ask(
+                    question=(
+                        f"orch「{desc_row['title']}」の新しい担い手に起こし直しの仕込みが無い: {reason}。"
+                        "担い手の窓口に、30分ごとの起こし直しを仕込んで状態節に書くよう伝えてほしい"
+                    ),
+                    blocks=[activity_id],
+                    tags=_domain_tags(conn, activity_id),
+                    context=f"CALMサーバーの担い手欄の見張りが立てた。sessionId {sid}。同じ担い手について1回しか知らせない",
+                    notify=False,
+                )
+                if "error" in ask and "id" not in ask:
+                    logger.warning("holder cron watch: add_ask failed: %s", ask["error"])
+                    continue
+                signal = signal_service.record_signal(
+                    CRON_SIGNAL_KIND,
+                    f"orchの新しい担い手に起こし直しの仕込みが無い: activity {activity_id} sessionId {sid}",
+                    source=SIGNAL_SOURCE, detail=reason,
+                    refs=[{"type": "activity", "id": activity_id}],
+                    context={"session_id": sid, "ask_id": ask.get("id")},
+                )
+                fired.append({"activity_id": activity_id, "session_id": sid,
+                              "ask_id": ask.get("id"), "signal_id": signal["id"]})
+            conn.execute("DELETE FROM holder_cron_pending WHERE activity_id = ? AND session_id = ?",
+                         (activity_id, sid))
+            conn.commit()
+    finally:
+        conn.close()
+    return fired
+
+
+def handoff_warnings(old_description: str | None, new_description: str,
+                     check_cron: bool = True) -> list[str]:
+    """担い手欄のsessionIdが書き換わるときの警告。書き込みは止めない。
+
+    check_cronがFalseなら起こし直しのjob idは見ない（担い手欄だけの差し替えの直後は
+    後継がまだ仕込んでいないのが普通なので、継続の見張りが後で確かめる）。
+    """
     old_sid = holder_session_id(old_description)
     new_sid = holder_session_id(new_description)
     # 空席にする書き換えは本人が自分で行うことが多く、本人は必ずbusyなので見ない
@@ -273,8 +384,7 @@ def handoff_warnings(old_description: str | None, new_description: str) -> list[
                 "止めるとSAの作業が途中で切れる"
             )
     # 後継は旧状態節を写すので、旧担い手のjob idが残っていても仕込みの証拠にならない
-    new_jobs = set(_JOB_ID_RE.findall(new_description)) - set(_JOB_ID_RE.findall(old_description or ""))
-    if not new_jobs:
+    if check_cron and not _new_job_ids(old_description, new_description):
         warnings.append(
             "状態節に新しい起こし直し（CronCreate）のjob idが無い。"
             "仕込んでから「起こし直し: Cron <job id>（毎時MM分・MM分）」の形で状態節に書く"
@@ -312,3 +422,8 @@ class HolderWatch:
                     logger.info("holder watch fired: %s", f)
             except Exception:
                 logger.exception("holder watch check failed, continuing")
+            try:
+                for f in check_cron_once(CRON_GRACE_SEC):
+                    logger.info("holder watch (cron) fired: %s", f)
+            except Exception:
+                logger.exception("holder cron watch check failed, continuing")

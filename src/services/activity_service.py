@@ -672,6 +672,44 @@ def get_pinned_active_activities() -> list[dict]:
         conn.close()
 
 
+def replace_holder_lines(activity_id: int, lines: list[str]) -> dict:
+    """説明の「担い手: 」で始まる全行だけを差し替える（orchの担い手欄の部分更新）。
+
+    updated_atは進めない。応答は差し替えた行・警告・本文（担い手欄を除く）が最後に変わった
+    時刻だけで、説明本文もtag notesも返さない。
+    """
+    if (
+        not isinstance(lines, list) or not lines
+        or not all(isinstance(l, str) and "\n" not in l and holder_watch_service.is_holder_line(l)
+                   for l in lines)
+    ):
+        return {"error": {"code": "VALIDATION_ERROR",
+                          "message": "lines must be a non-empty list of single lines starting with '担い手: '"}}
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT description, title, updated_at FROM activities WHERE id = ?", (activity_id,)
+        ).fetchone()
+        if not row:
+            return {"error": {"code": "NOT_FOUND", "message": f"Activity with id {activity_id} not found"}}
+        old = row["description"] or ""
+        new = holder_watch_service.replace_holder_lines(old, lines)
+        warnings = holder_watch_service.handoff_warnings(old, new, check_cron=False)
+        conn.execute("UPDATE activities SET description = ? WHERE id = ?", (new, activity_id))
+        upsert_citations_for_owner_with_conn(
+            conn, "activity", activity_id, title=row["title"], description=new,
+        )
+        conn.commit()
+        holder_watch_service.expect_cron(activity_id, old, new)
+        result = {"activity_id": activity_id, "holder_lines": lines,
+                  "body_changed_at": row["updated_at"]}
+        if warnings:
+            result["holder_warnings"] = warnings
+        return result
+    finally:
+        conn.close()
+
+
 def update_activity(
     activity_id: int,
     status: str | None = None,

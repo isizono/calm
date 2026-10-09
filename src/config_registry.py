@@ -108,6 +108,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("CALM_HOLDER_WATCH_INTERVAL_SEC", "300", "orchの担い手欄の見張りが担い手の停止を確かめる間隔（秒）。0で見張りを無効化", "internal"),
     EnvVar("CALM_HOLDER_WATCH_DEAD_MIN", "10", "担い手のプロセスが無く、transcriptの最終更新からこの分数が過ぎたら停止として人に知らせる", "internal"),
     EnvVar("CALM_HOLDER_WATCH_STALE_MIN", "60", "担い手のプロセスはあるが、transcriptがこの分数更新されなければ停止として人に知らせる", "internal"),
+    EnvVar("CALM_LINE_ESCALATE_DISABLE", None, "1にすると、止まったセッションの状況報告の自動askを立てない（担い手以外のペインで起こすclaudeに、起動ラッパーが入れる）", "internal"),
     EnvVar("CALM_CLAUDE_PROJECTS_DIR", None, "Claude Codeのtranscript置き場（既定 ~/.claude/projects）", "internal"),
     EnvVar("CALM_SESSION_LIVENESS_TIMEOUT_SEC", "300", "heartbeatが途絶したセッションを失効させるまでの時間（秒）", "internal"),
     EnvVar("CALM_SESSION_REGISTRY_PATH", None, "セッション別名対応表のパス", "internal"),

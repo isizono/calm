@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -206,7 +207,7 @@ _OBSERVER_TEMPLATE = """あなたはCALMのアクティビティ「{activity_tit
    - 担い手欄が空席なら判定しない(空席は異常ではない)
 2. 文脈・圧縮・skillの版: `python3 {handoff_script} --session-id <sessionId> --role holder` → `trigger`がtrueなら、まだ送っていなければ担い手へSendMessageで「交代せよ」を送る(同じ相手に二重に送らない。送ったことをログに書く)
 
-DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。後継を起こすのは担い手(または次の担い手)の仕事で、観測役は検知して報告するところまで(決定「無人での後継起動は環境の限界とする」)。報告の末尾に次の1行を添え、その報告を見て代わる窓口に後継の最初の手を渡す: 「後継はorch skillの代わる節の手順1から始める: check_inより前に、根の答えの掲示板の最新の版の要点節(3,000字まで)だけを読み、壊れる場面を1つ条文番号と場面の主語付きで掲示板に書いてから代わる。版はsearch(keyword「根の答え」、tags=["board","root-answer"]、entity_type=log)の結果から作成時刻が最も新しい1本を選びget_by_idsで読む。書き終えるまで、check_in・get_logs・orchの説明と掲示板の他の投稿は読まない」
+DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。後継を起こすのは担い手(または次の担い手)の仕事で、観測役は検知して報告するところまで(決定「無人での後継起動は環境の限界とする」)。報告の末尾に、後継を起こす窓口が打つコマンドを添える: `python3 {pane_script} --role holder --plugin-dir <labの絶対パス> --orch-title '<orchの題>' --orch-activity-id <orchアクティビティのid> --old-name <担い手欄の名前> --old-session-id <担い手欄のsessionId> [--board-title '<根の答えの掲示板の題>']`。起動文は雛形が組むので、観測役は起動文を書かない。--old-pidは分かるときだけ足し、掲示板の題が分かるときだけ--board-titleを付け、分からなければ付けない（雛形が後継に掲示板を探させる）
 
 CronCreateがauto modeに止められたら(許可が無い環境)、迂回も言い換えての再試行もしない。止められたことを報告先へ書くだけにし、1・2の判定は手動で続ける。
 
@@ -304,6 +305,16 @@ def build_request(
         holder_transcript=holder_transcript,
         liveness_script=Path(__file__).resolve().parent / "orch_liveness.py",
         handoff_script=Path(__file__).resolve().parent / "handoff_trigger.py",
+        pane_script=Path(__file__).resolve().parent / "pane_claude.py",
+    )
+
+
+def launch_command(*, name: str, request_file: str, plugin_dir: str, model: str = "sonnet") -> str:
+    """依頼文のファイルからbgを起こす1行。--modelの既定はsonnet(枠「fableは同時1本まで」)。"""
+    return (
+        f"claude --bg --permission-mode auto --model {shlex.quote(model)} "
+        f"--plugin-dir {shlex.quote(plugin_dir)} -n {shlex.quote(name)} "
+        f'"$(cat {shlex.quote(request_file)})" </dev/null'
     )
 
 
@@ -368,7 +379,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             flag, default=None,
             help=f"{label}。--role consultant・--role observerのとき必須(起動時点の値。見るたびに担い手欄から読み直す)",
         )
+    parser.add_argument(
+        "--launch-name", default=None,
+        help="渡すと、依頼文を--request-fileに書き、依頼文でなくbgを起こす1行(--model既定sonnet)を出力する",
+    )
+    parser.add_argument("--request-file", default=None, help="--launch-nameのとき依頼文を書くファイル")
+    parser.add_argument("--launch-model", default="sonnet", help="--launch-nameの起動行に入れる--model(既定: sonnet)")
+    parser.add_argument(
+        "--plugin-dir", default=str(Path(__file__).resolve().parent.parent),
+        help="--launch-nameの起動行に入れる--plugin-dir(既定: このスクリプトのあるプラグインのルート)",
+    )
     args = parser.parse_args(argv)
+    if args.launch_name and not args.request_file:
+        parser.error("--launch-nameには--request-fileが要る")
     if args.role != "worker" and args.consultant_activity_id is not None:
         parser.error(f"--consultant-activity-idは--role {args.role}と同時に指定できない")
     holder = (args.holder_name, args.holder_session_id, args.holder_transcript)
@@ -384,7 +407,7 @@ def main(argv: list[str] | None = None) -> None:
     # 依頼文を出す宛先activityを委譲先として記録する(Stop hookの記録義務block用)。
     # 依頼文の生成そのものはbuild_requestに閉じ、ファイルを書くのはCLI実行時だけ。
     write_delegate_marker(args.activity_id)
-    print(build_request(
+    request = build_request(
         activity_id=args.activity_id,
         activity_title=args.activity_title,
         worktree=args.worktree,
@@ -401,7 +424,14 @@ def main(argv: list[str] | None = None) -> None:
         holder_name=args.holder_name,
         holder_session_id=args.holder_session_id,
         holder_transcript=args.holder_transcript,
-    ), end="")
+    )
+    if args.launch_name:
+        request_file = str(Path(args.request_file).resolve())
+        Path(request_file).write_text(request, encoding="utf-8")
+        print(launch_command(name=args.launch_name, request_file=request_file,
+                             plugin_dir=args.plugin_dir, model=args.launch_model))
+    else:
+        print(request, end="")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 <!-- 再生成: uv run python scripts/dump_db_schema.py -->
 
 `migrations/` を通し番号順に全適用した結果として得られる、現在のテーブル/ビュー構造の機械的な写しである。
-カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0092）。
+カラム名・型・NULL可否・デフォルト値・インデックスは常に本ファイルが最新（生成時点で最新migrationは 0093）。
 
 「なぜこの形なのか」（設計判断の背景・変遷・既知の課題）は `docs/spec/db-schema.md` を参照。
 本ファイルは現在値のみを扱い、変遷の経緯（旧カラムの削除理由等）は記載しない。
@@ -1057,6 +1057,31 @@ CREATE TABLE hint_cooldowns (
     until_date  TEXT NOT NULL,
     updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (tag_id, marker)
+)
+```
+
+</details>
+
+### holder_cron_pending
+
+| カラム名 | 型 | NULL | デフォルト | PK |
+|---|---|---|---|---|
+| activity_id | INTEGER | NO | — | PK |
+| session_id | TEXT | NO | — | PK |
+| replaced_at | REAL | NO | — | — |
+| base_description | TEXT | NO | — | — |
+
+インデックス: なし（自動生成される主キー索引を除く）
+
+<details><summary>CREATE文（生成元migration）</summary>
+
+```sql
+CREATE TABLE holder_cron_pending (
+    activity_id INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    replaced_at REAL NOT NULL,
+    base_description TEXT NOT NULL,
+    PRIMARY KEY (activity_id, session_id)
 )
 ```
 

@@ -169,17 +169,18 @@ class TestBuildRequest:
         assert "「交代せよ」を送る" in watch
         assert "同じ相手に二重に送らない" in watch
 
-    def test_observer_dead_report_hands_successor_the_attack_first_step(self):
+    def test_observer_dead_report_hands_successor_the_template_command(self):
         watch = _build(role="observer").split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
         dead = next(line for line in watch.splitlines() if line.startswith("DEADかSTUCKが出たら"))
-        # 観測役は後継を起こさず、報告を見て代わる窓口に状態節より先の攻撃を渡すだけ
+        # 観測役は後継を起こさず、後継を起こす窓口が打つコマンドを報告に添えるだけ
         assert "観測役は検知して報告するところまで" in dead
-        assert "代わる節の手順1から始める: check_inより前に" in dead
-        assert "要点節(3,000字まで)だけを読み" in dead
-        assert "条文番号と場面の主語付きで掲示板に書いてから代わる" in dead
-        # 後継はorch skillを読む前にこの段を踏むので、読み方も報告の1行に書き切る
-        assert "書き終えるまで、check_in・get_logs・orchの説明と掲示板の他の投稿は読まない" in dead
-        assert 'search(keyword「根の答え」、tags=["board","root-answer"]、entity_type=log)の結果から作成時刻が最も新しい1本' in dead
+        pane = Path(__file__).resolve().parents[2] / "scripts" / "pane_claude.py"
+        assert pane.is_file()
+        assert f"python3 {pane} --role holder --plugin-dir" in dead
+        for flag in ("--orch-title", "--orch-activity-id", "--old-name", "--old-session-id", "--board-title"):
+            assert flag in dead
+        # 起動文の逐語は書かない(雛形が組む)
+        assert "check_inより前に" not in dead
 
     def test_observer_role_requires_holder_values(self):
         with pytest.raises(ValueError):
@@ -249,6 +250,44 @@ class TestMainCli:
         assert 'get_goal(handle="orch-goal")' in out
         assert "id_raw=12の条件のboundが" in out
         assert "/tmp/pending" in out
+
+    def test_launch_name_writes_request_and_prints_launch_line_with_sonnet_default(self, capsys, tmp_path):
+        req = tmp_path / "req it.txt"
+        main([
+            "--activity-id", "7", "--activity-title", "テスト活動", "--worktree", "/tmp/wt",
+            "--parent-goal-handle", "g", "--parent-condition-id", "2",
+            "--launch-name", "my-bg", "--request-file", str(req), "--plugin-dir", "/lab dir",
+        ])
+        line = capsys.readouterr().out.strip()
+        assert "activity_id=7" in req.read_text(encoding="utf-8")
+        assert line == (
+            "claude --bg --permission-mode auto --model sonnet --plugin-dir '/lab dir' -n my-bg "
+            f"\"$(cat '{req}')\" </dev/null"
+        )
+
+    def test_launch_line_uses_an_absolute_request_path(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        main([
+            "--activity-id", "7", "--activity-title", "t", "--worktree", "/w",
+            "--parent-goal-handle", "g", "--parent-condition-id", "2",
+            "--launch-name", "n", "--request-file", "req.txt",
+        ])
+        assert f"$(cat {tmp_path.resolve() / 'req.txt'})" in capsys.readouterr().out
+
+    def test_launch_model_can_be_overridden(self, capsys, tmp_path):
+        main([
+            "--activity-id", "7", "--activity-title", "t", "--worktree", "/w",
+            "--parent-goal-handle", "g", "--parent-condition-id", "2",
+            "--launch-name", "n", "--request-file", str(tmp_path / "r"), "--launch-model", "opus",
+        ])
+        assert "--model opus " in capsys.readouterr().out
+
+    def test_launch_name_requires_request_file(self):
+        with pytest.raises(SystemExit):
+            main([
+                "--activity-id", "7", "--activity-title", "t", "--worktree", "/w",
+                "--parent-goal-handle", "g", "--parent-condition-id", "2", "--launch-name", "n",
+            ])
 
     _CLI_BASE = [
         "--activity-id", "1", "--activity-title", "t", "--worktree", "/w",
