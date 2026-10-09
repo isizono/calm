@@ -101,6 +101,14 @@ class TestBuildRequest:
         text = _build()
         assert "退避先の設定なし" in text
 
+    def test_worker_request_has_human_handed_item_rule(self):
+        text = _build()
+        section = text.split("## 人が渡したもの\n", 1)[1].split("\n\n## ", 1)[0]
+        assert "素タグuser-hintの付いた資材" in section
+        assert "作業ツリーの外の置き場に人が置いたファイル" in section
+        assert "適用先の問い1行" in section
+        assert "未適用欄に載せるのは担い手" in section
+
     def test_role_switches_template(self):
         assert _build(role="consultant") != _build()
 
