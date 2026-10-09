@@ -1258,8 +1258,8 @@ def replace_holder_lines(activity_id: int, lines: list[str]) -> dict:
 
 @mcp.tool()
 def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict:
-    """Choose: activityの終了条件(goal)上の立場を決めたいとき（set or define a goal for an activity）。goal自体はactivityから
-    作る。既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
+    """Choose: activityの終了条件(goal)上の立場を決めたいとき（set or define a goal for an activity）。新規作成、
+    既存のgoal(goal_id)に紐づける・不要印(waiver)を付ける・未定義に戻す(None)も
     この1本で扱う。充足の記録・条件の追加はupdate_goal、終了の明示判定はjudge_goal。
 
     Args:
@@ -1270,7 +1270,7 @@ def set_goal(activity_id: int, goal: dict | None, replace: bool = False) -> dict
               "actor": "claude"|"human"|"external",
               "bound": {"type": "activity"|"decision"|"ask", "id": int} | None,
               "state": "open"|"satisfied"|"waived"(既定open), "note": str | None}。
-              waivedはnote必須
+              waivedはnote必須。intent:designは後続起票条件を自動追加
             - {"goal_id": int} 既存の未判定goalに紐づける(複数activityにまたがるgoal)
             - {"waiver": str} 終了条件は不要と記録する(理由)
             - None 紐づけ・不要印を外して未定義に戻す

@@ -27,6 +27,7 @@ description: 【必須】現在のアクティビティを完了にする、ま�
    付け替え・取り下げをせずに完了させると、askは完了済みのactivityにぶら下がったまま、後から作業を引き継ぐ者に届かない
 4. `label` に応じて完了させる
    - `undefined`（goal無し）: `update_activity(status="completed", closed_by="user", closed_reason=...)`。事後にgoalを促すことはしない。ただし、ユーザーがその場で「何をもって終わったか」を条件として言ったときだけ、`set_goal(activity_id, goal={"new": {...条件はstate="satisfied"か理由付きwaivedで作成...}})` で全条件を終端にして作り、続けて `judge_goal` で判定する（`update_activity` は呼ばない。activityの完了はjudge_goal側で行われる）
+     - `intent:design`のactivityでは、サーバーが後続起票の条件をopenで1件足す（手で書かない）。作成直後の`judge_goal`は`GOAL_NOT_READY`になるので、`get_goal(activity_id=...)`でその条件のidを取り、`update_goal`でsatisfied（後続の[作業]を起票して束縛）かwaived（不要の理由をnoteに）にしてから`judge_goal`し直す
    - `not_needed`（不要印）: `update_activity(status="completed", closed_by="user", closed_reason=...)`。不要印は「この activity には終了条件を置かない」という明示の印なので、事後にgoalを作る例外は適用しない
    - `active`（openの条件が残る）: 1ターンだけ確認し、ユーザーの選択に応じて次のいずれかにする
      - 残りの条件を理由付きでwaivedにしてから達成扱いにする: `update_goal(goal_id, changes=[{"op":"set","id":<条件id>,"state":"waived","note":理由}, ...])` → `judge_goal(goal_id, verdict="achieved", judged_by="human")`（waivedにするとsatisfiedが0件になる場合はこの選択肢を示さない。全条件のidが要るときは `get_goal(activity_id=...)` で確認する）
