@@ -173,17 +173,17 @@ class TestFoldedTagNotesLedger:
 
         def response():
             r = _base_response()
+            # intent:だけで天井を超えるので、後回しにしても畳まれる
             r["env"]["tag_notes"] = [
-                {"tag": "intent:huge", "notes": "x" * (_TAG_NOTES_RATCHET_CEILING - 100)},
-                {"tag": "domain:huge", "notes": "y" * (_TAG_NOTES_RATCHET_CEILING - 100)},
+                {"tag": "intent:huge", "notes": "x" * (CHECKIN_TAG_NOTES_CAP_CHARS + 100)},
             ]
             return r
 
         for _ in range(2):
             out = rb.apply_budget(response(), cts.TIER_FORM_BUDGET_POLICY)
-            by_tag = {n["tag"]: n["notes"] for n in out["env"]["tag_notes"]}
-            # 大きさが同じなら先に畳まれるのは並びの先頭(intent)。毎回ポインタが出る
-            assert by_tag["intent:huge"] == _fold_pointer_text("intent:huge")
+            assert out["env"]["tag_notes"] == [
+                {"tag": "intent:huge", "notes": _fold_pointer_text("intent:huge")}
+            ]
 
     def test_subagent_and_parent_count_pointers_separately(self, monkeypatch):
         self._patch_session(monkeypatch)
@@ -198,6 +198,62 @@ class TestFoldedTagNotesLedger:
 
         assert _folded_tag(sub) == _folded_tag(parent)
         assert sub["env"]["tag_notes"] != []
+
+
+class TestFoldOrder:
+    """天井で畳むとき、アクティビティの種類を示すタグ（orch・intent:）を後回しにする。"""
+
+    def test_kind_tags_survive_over_larger_and_smaller_other_tags(self):
+        response = _base_response()
+        response["env"]["tag_notes"] = [
+            {"tag": "orch", "notes": "o" * 3500},
+            {"tag": "domain:calm", "notes": "d" * 2000},
+            {"tag": "intent:discuss", "notes": "i" * 1000},
+        ]
+
+        out = rb.apply_budget(response, cts.TIER_FORM_BUDGET_POLICY)
+
+        notes = out["env"]["tag_notes"]
+        by_tag = {n["tag"]: n["notes"] for n in notes}
+        # 一番大きいorchではなく、種類を示さないdomain:calmが畳まれる
+        assert by_tag == {
+            "orch": "o" * 3500,
+            "domain:calm": _fold_pointer_text("domain:calm"),
+            "intent:discuss": "i" * 1000,
+        }
+        assert rb.measure_chars(notes) <= CHECKIN_TAG_NOTES_CAP_CHARS
+
+    def test_other_tags_fold_largest_first(self):
+        response = _base_response()
+        response["env"]["tag_notes"] = [
+            {"tag": "intent:implement", "notes": "i" * 1000},
+            {"tag": "small", "notes": "s" * 1500},
+            {"tag": "large", "notes": "l" * 3800},
+        ]
+
+        out = rb.apply_budget(response, cts.TIER_FORM_BUDGET_POLICY)
+
+        by_tag = {n["tag"]: n["notes"] for n in out["env"]["tag_notes"]}
+        assert by_tag == {
+            "intent:implement": "i" * 1000,
+            "small": "s" * 1500,
+            "large": _fold_pointer_text("large"),
+        }
+
+    def test_kind_tags_fold_largest_first_when_they_alone_exceed_the_cap(self):
+        response = _base_response()
+        response["env"]["tag_notes"] = [
+            {"tag": "orch", "notes": "o" * 3900},
+            {"tag": "intent:discuss", "notes": "i" * 3000},
+        ]
+
+        out = rb.apply_budget(response, cts.TIER_FORM_BUDGET_POLICY)
+
+        by_tag = {n["tag"]: n["notes"] for n in out["env"]["tag_notes"]}
+        assert by_tag == {
+            "orch": _fold_pointer_text("orch"),
+            "intent:discuss": "i" * 3000,
+        }
 
 
 class TestControlExcludedFromMainBudgetAndNeverFolded:

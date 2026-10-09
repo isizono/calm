@@ -251,6 +251,14 @@ def _build_decision_candidates(candidates: list[dict], total: int) -> dict | Non
 # 配信済みにせず毎回注入するnamespace。天井で畳んでも帳簿の対象にしない。
 ALWAYS_INJECT_NAMESPACES = ["intent"]
 
+# アクティビティの種類を示すタグ。天井で畳むとき、これ以外のタグを先に畳む。
+# intent:はALWAYS_INJECT_NAMESPACESで別に判定する。
+_KIND_TAGS = frozenset({"orch"})
+
+
+def _is_kind_tag(tag: object) -> bool:
+    return isinstance(tag, str) and (tag in _KIND_TAGS or tag.partition(":")[0] in ALWAYS_INJECT_NAMESPACES)
+
 
 def _build_unlearned_corrections(items: list[dict], total: int, same_type: list[int]) -> dict | None:
     if not items and not same_type:
@@ -572,8 +580,10 @@ def _activity_description_pointer(response: dict) -> list[dict]:
 
 
 def _fold_tag_notes(response: dict) -> None:
-    """env.tag_notesの天井超過分を、大きいnotesから順に1行ポインタへ縮退させる。
+    """env.tag_notesの天井超過分を1行ポインタへ縮退させる。
 
+    アクティビティの種類を示すタグ（orch・intent:）は後回しにし、それ以外を
+    大きいnotesから順に畳む。種類を示すタグも、それだけで天井を超えるときは畳む。
     畳んだタグは全文が届いていないので配信済みから外す。同じセッションで
     ポインタを出し済みのタグは、ポインタも出さず項目ごと取り除く。
     """
@@ -584,8 +594,7 @@ def _fold_tag_notes(response: dict) -> None:
     session_id = session_identity.get_caller_session_id()
     sized = sorted(
         (item for item in notes if isinstance(item, dict)),
-        key=lambda item: response_budget.measure_chars(item.get("notes", "")),
-        reverse=True,
+        key=lambda item: (_is_kind_tag(item.get("tag")), -response_budget.measure_chars(item.get("notes", ""))),
     )
     for item in sized:
         if response_budget.measure_chars(notes) <= CHECKIN_TAG_NOTES_CAP_CHARS:
