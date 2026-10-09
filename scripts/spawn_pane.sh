@@ -12,5 +12,5 @@ new=$(t split-window -v -t "$src" -P -F '#{pane_id}' -c "$cwd")
 t select-pane -t "$new" -T "$title"
 model_arg=""
 [ -n "$model" ] && model_arg="--model $model"
-t send-keys -t "$new" "python3 $LAB/scripts/pane_claude.py --role $role $model_arg --plugin-dir $LAB \"\$(cat $file)\"" Enter
+t send-keys -t "$new" "python3 $(printf %q "$LAB")/scripts/pane_claude.py --role $role $model_arg --plugin-dir $(printf %q "$LAB") \"\$(cat $(printf %q "$file"))\"" Enter
 echo "$new"

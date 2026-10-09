@@ -278,11 +278,6 @@ def replace_holder_lines(description: str | None, lines: list[str]) -> str:
     return "\n".join(out)
 
 
-# 担い手欄を差し替えた直後の、起こし直し（CronCreate）の仕込みの確かめ待ち。
-# key: (activity_id, 新担い手のsessionId) -> (差し替えた時刻, 差し替え前の説明)
-# ponytail: プロセス内の記憶なのでサーバーの再起動で消える。要るならDBに持つ。
-_pending_cron: dict[tuple[int, str], tuple[float, str]] = {}
-
 # 担い手欄の差し替えから、新しい起こし直しのjob idが状態節に載るまで待つ秒数
 CRON_GRACE_SEC = 900
 CRON_SIGNAL_KIND = "custom:holder-no-cron"
@@ -290,39 +285,71 @@ CRON_SIGNAL_KIND = "custom:holder-no-cron"
 
 def expect_cron(activity_id: int, old_description: str | None, new_description: str,
                 now: float | None = None) -> None:
-    """担い手欄のsessionIdが変わった差し替えの後、見張りが起こし直しの仕込みを確かめる対象に入れる。"""
+    """担い手欄のsessionIdが変わった差し替えの後、見張りが起こし直しの仕込みを確かめる対象に入れる。
+
+    待ちはDBに持つ（サーバーの再起動や、見張りを持たないリモートサーバー経由の差し替えでも消えない）。
+    """
     new_sid = holder_session_id(new_description)
     if new_sid is None or new_sid == holder_session_id(old_description):
         return
-    _pending_cron[(activity_id, new_sid)] = (time.time() if now is None else now, old_description or "")
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO holder_cron_pending (activity_id, session_id, replaced_at, base_description)"
+            " VALUES (?, ?, ?, ?)",
+            (activity_id, new_sid, time.time() if now is None else now, old_description or ""),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def check_cron_once(grace_sec: float, now: float | None = None) -> list[dict]:
-    """差し替えから猶予を過ぎても新しい起こし直しのjob idが状態節に無ければsignalを1回立てる。"""
+    """差し替えから猶予を過ぎても新しい起こし直しのjob idが状態節に無ければ、askとsignalを1回立てる。"""
     now = time.time() if now is None else now
     fired = []
     conn = get_connection()
     try:
-        for (activity_id, sid), (at, base) in list(_pending_cron.items()):
-            row = conn.execute(
-                "SELECT description FROM activities WHERE id = ?", (activity_id,)
-            ).fetchone()
-            desc = row["description"] if row else None
-            if desc is None or holder_session_id(desc) != sid or _new_job_ids(base, desc):
-                del _pending_cron[(activity_id, sid)]
+        orch_ids = {r["id"] for r in _orch_activities(conn)}
+        for row in conn.execute("SELECT * FROM holder_cron_pending").fetchall():
+            activity_id, sid, at, base = (
+                row["activity_id"], row["session_id"], row["replaced_at"], row["base_description"])
+            desc_row = conn.execute(
+                "SELECT title, description FROM activities WHERE id = ?", (activity_id,)).fetchone()
+            desc = desc_row["description"] if desc_row else None
+            done = (activity_id not in orch_ids or holder_session_id(desc) != sid
+                    or bool(_new_job_ids(base, desc)))
+            if not done and now - at < grace_sec:
                 continue
-            if now - at < grace_sec:
-                continue
-            del _pending_cron[(activity_id, sid)]
-            signal = signal_service.record_signal(
-                CRON_SIGNAL_KIND,
-                f"orchの新しい担い手に起こし直しの仕込みが無い: activity {activity_id} sessionId {sid}",
-                source=SIGNAL_SOURCE,
-                detail=f"担い手欄の差し替えから{(now - at) / 60:.0f}分たっても状態節に新しい起こし直し（CronCreate）のjob idが無い",
-                refs=[{"type": "activity", "id": activity_id}],
-                context={"session_id": sid},
-            )
-            fired.append({"activity_id": activity_id, "session_id": sid, "signal_id": signal["id"]})
+            if not done:
+                minutes = f"{(now - at) / 60:.0f}"
+                reason = f"担い手欄の差し替えから{minutes}分たっても状態節に新しい起こし直し（CronCreate）のjob idが無い"
+                # askを先に立てる(check_onceと同じ理由)。失敗したら待ちを残して次の周で再試行する
+                ask = ask_service.add_ask(
+                    question=(
+                        f"orch「{desc_row['title']}」の新しい担い手に起こし直しの仕込みが無い: {reason}。"
+                        "担い手の窓口に、30分ごとの起こし直しを仕込んで状態節に書くよう伝えてほしい"
+                    ),
+                    blocks=[activity_id],
+                    tags=_domain_tags(conn, activity_id),
+                    context=f"CALMサーバーの担い手欄の見張りが立てた。sessionId {sid}。同じ担い手について1回しか知らせない",
+                    notify=False,
+                )
+                if "error" in ask and "id" not in ask:
+                    logger.warning("holder cron watch: add_ask failed: %s", ask["error"])
+                    continue
+                signal = signal_service.record_signal(
+                    CRON_SIGNAL_KIND,
+                    f"orchの新しい担い手に起こし直しの仕込みが無い: activity {activity_id} sessionId {sid}",
+                    source=SIGNAL_SOURCE, detail=reason,
+                    refs=[{"type": "activity", "id": activity_id}],
+                    context={"session_id": sid, "ask_id": ask.get("id")},
+                )
+                fired.append({"activity_id": activity_id, "session_id": sid,
+                              "ask_id": ask.get("id"), "signal_id": signal["id"]})
+            conn.execute("DELETE FROM holder_cron_pending WHERE activity_id = ? AND session_id = ?",
+                         (activity_id, sid))
+            conn.commit()
     finally:
         conn.close()
     return fired
@@ -393,7 +420,10 @@ class HolderWatch:
             try:
                 for f in check_once(self._dead_sec, self._stale_sec, self._seen_alive):
                     logger.info("holder watch fired: %s", f)
+            except Exception:
+                logger.exception("holder watch check failed, continuing")
+            try:
                 for f in check_cron_once(CRON_GRACE_SEC):
                     logger.info("holder watch (cron) fired: %s", f)
             except Exception:
-                logger.exception("holder watch check failed, continuing")
+                logger.exception("holder cron watch check failed, continuing")

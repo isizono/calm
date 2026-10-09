@@ -207,7 +207,7 @@ _OBSERVER_TEMPLATE = """あなたはCALMのアクティビティ「{activity_tit
    - 担い手欄が空席なら判定しない(空席は異常ではない)
 2. 文脈・圧縮・skillの版: `python3 {handoff_script} --session-id <sessionId> --role holder` → `trigger`がtrueなら、まだ送っていなければ担い手へSendMessageで「交代せよ」を送る(同じ相手に二重に送らない。送ったことをログに書く)
 
-DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。後継を起こすのは担い手(または次の担い手)の仕事で、観測役は検知して報告するところまで(決定「無人での後継起動は環境の限界とする」)。報告の末尾に、後継を起こす窓口が打つコマンドを添える: `python3 {pane_script} --role holder --plugin-dir <labの絶対パス> --orch-title '<orchの題>' --orch-activity-id <orchアクティビティのid> --old-name <担い手欄の名前> --old-session-id <担い手欄のsessionId> [--board-title '<根の答えの掲示板の題>']`。起動文は雛形が組むので、観測役は起動文を書かない。--old-pidは分かるときだけ足し、掲示板の無いorchでは--board-titleを付けない
+DEADかSTUCKが出たら、まず報告先へadd_logsで判定スクリプトの出力をそのまま書く。後継を起こすのは担い手(または次の担い手)の仕事で、観測役は検知して報告するところまで(決定「無人での後継起動は環境の限界とする」)。報告の末尾に、後継を起こす窓口が打つコマンドを添える: `python3 {pane_script} --role holder --plugin-dir <labの絶対パス> --orch-title '<orchの題>' --orch-activity-id <orchアクティビティのid> --old-name <担い手欄の名前> --old-session-id <担い手欄のsessionId> [--board-title '<根の答えの掲示板の題>']`。起動文は雛形が組むので、観測役は起動文を書かない。--old-pidは分かるときだけ足し、掲示板の題が分かるときだけ--board-titleを付け、分からなければ付けない（雛形が後継に掲示板を探させる）
 
 CronCreateがauto modeに止められたら(許可が無い環境)、迂回も言い換えての再試行もしない。止められたことを報告先へ書くだけにし、1・2の判定は手動で続ける。
 
@@ -426,8 +426,9 @@ def main(argv: list[str] | None = None) -> None:
         holder_transcript=args.holder_transcript,
     )
     if args.launch_name:
-        Path(args.request_file).write_text(request, encoding="utf-8")
-        print(launch_command(name=args.launch_name, request_file=args.request_file,
+        request_file = str(Path(args.request_file).resolve())
+        Path(request_file).write_text(request, encoding="utf-8")
+        print(launch_command(name=args.launch_name, request_file=request_file,
                              plugin_dir=args.plugin_dir, model=args.launch_model))
     else:
         print(request, end="")

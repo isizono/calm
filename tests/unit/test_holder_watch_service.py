@@ -282,6 +282,28 @@ class TestCronWatchAfterPartialReplace:
         assert len(check_cron_once(900, now=t0 + 901)) == 1
         assert check_cron_once(900, now=t0 + 2000) == []
         assert len(_rows("SELECT 1 FROM signal_events WHERE kind = 'custom:holder-no-cron'")) == 1
+        # signalだけでなく、人に届くaskも立つ
+        asks = _rows("SELECT question FROM asks")
+        assert len(asks) == 1 and "ダミーorch" in asks[0]["question"]
+
+    def test_pending_check_lives_in_the_db_not_in_the_process(self, temp_db):
+        aid = _orch(_desc(OLD_SID, job="81f254da"))
+        self._replace(aid)
+
+        rows = _rows("SELECT session_id, base_description FROM holder_cron_pending WHERE activity_id = ?", (aid,))
+        assert len(rows) == 1 and rows[0]["session_id"] == NEW_SID
+        assert "81f254da" in rows[0]["base_description"]
+
+    def test_completed_orch_drops_the_pending_check_without_firing(self, temp_db):
+        from src.services.holder_watch_service import check_cron_once
+
+        aid = _orch(_desc(OLD_SID, job="81f254da"))
+        self._replace(aid)
+        update_activity(aid, status="completed", closed_by="user", closed_reason="x")
+
+        assert check_cron_once(900, now=time.time() + 5000) == []
+        assert _rows("SELECT 1 FROM holder_cron_pending") == []
+        assert _rows("SELECT 1 FROM signal_events WHERE kind = 'custom:holder-no-cron'") == []
 
     def test_new_job_id_written_in_time_means_no_signal(self, temp_db):
         from src.services.holder_watch_service import check_cron_once

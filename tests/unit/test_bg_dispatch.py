@@ -265,6 +265,15 @@ class TestMainCli:
             f"\"$(cat '{req}')\" </dev/null"
         )
 
+    def test_launch_line_uses_an_absolute_request_path(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        main([
+            "--activity-id", "7", "--activity-title", "t", "--worktree", "/w",
+            "--parent-goal-handle", "g", "--parent-condition-id", "2",
+            "--launch-name", "n", "--request-file", "req.txt",
+        ])
+        assert f"$(cat {tmp_path.resolve() / 'req.txt'})" in capsys.readouterr().out
+
     def test_launch_model_can_be_overridden(self, capsys, tmp_path):
         main([
             "--activity-id", "7", "--activity-title", "t", "--worktree", "/w",

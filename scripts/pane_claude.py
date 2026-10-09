@@ -33,6 +33,7 @@ ESCALATE_DISABLE_ENV = "CALM_LINE_ESCALATE_DISABLE"
 ROLE_MODELS = {"consultant": "opus", "lesson": "opus", "worker": "opus", "observer": "sonnet"}
 HOLDER_TEMPLATE = Path(__file__).resolve().parent / "templates" / "holder_launch.txt"
 BOARD_STEP_MARK = "[掲示板] "
+NO_BOARD_STEP_MARK = "[掲示板なし] "
 
 
 def build_env(role: str, env: Mapping[str, str]) -> dict[str, str]:
@@ -56,17 +57,17 @@ def model_args(role: str, claude_args: list[str]) -> list[str]:
 def render_holder_prompt(*, orch_title: str, orch_activity_id: int, old_name: str,
                          old_session_id: str, old_pid: int | None = None,
                          old_pane: str | None = None, board_title: str | None = None) -> str:
-    """雛形の「* 」で始まる行を手順として番号を振り、掲示板が無ければ掲示板の手順を落とす。"""
+    """雛形の「* 」で始まる行を手順として番号を振る。掲示板の題の有無で、掲示板の手順の2つの版から1つを選ぶ。"""
     header: list[str] = []
     steps: list[str] = []
     for line in HOLDER_TEMPLATE.read_text(encoding="utf-8").splitlines():
         if line.startswith("* "):
             step = line[2:]
-            if step.startswith(BOARD_STEP_MARK):
-                if not board_title:
-                    continue
-                step = step[len(BOARD_STEP_MARK):]
-            steps.append(step)
+            for mark, wanted in ((BOARD_STEP_MARK, bool(board_title)), (NO_BOARD_STEP_MARK, not board_title)):
+                if step.startswith(mark):
+                    step = step[len(mark):] if wanted else ""
+            if step:
+                steps.append(step)
         else:
             header.append(line)
     numbered = [f"{i}. {s}" for i, s in enumerate(steps, 1)]

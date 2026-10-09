@@ -89,15 +89,17 @@ def test_holder_prompt_is_built_from_the_template_and_appended_last(monkeypatch)
     assert "ダミーorchのorch続けて" in prompt and "activity_id=77" in prompt
     assert "workspace-aa（sessionId 11111111-1111-1111-1111-111111111111、pid 123、ペイン %5）" in prompt
     assert "$$" not in prompt and "${" not in prompt
-    assert "pidが$CLAUDE_PIDの行" in prompt
+    assert "echo $CLAUDE_PID" in prompt
 
 
-def test_holder_prompt_numbers_steps_and_drops_the_board_step_without_a_board():
+def test_holder_prompt_numbers_steps_and_picks_one_board_step():
     without = pane_claude.render_holder_prompt(
         orch_title="t", orch_activity_id=1, old_name="n", old_session_id="s")
     with_board = pane_claude.render_holder_prompt(
         orch_title="t", orch_activity_id=1, old_name="n", old_session_id="s", board_title="掲示板X")
-    assert "掲示板X" in with_board and "掲示板" not in without
+    assert "掲示板X" in with_board and "掲示板の題が渡されていない" not in with_board
+    # 題が無いときも攻撃の手順は落とさず、後継に掲示板を探させる
+    assert "掲示板の題が渡されていない" in without and "壊れる場面を1つ" in without
     numbers = [line.split(".")[0] for line in with_board.splitlines() if line[:1].isdigit()]
     assert numbers == [str(i) for i in range(1, len(numbers) + 1)]
     numbers = [line.split(".")[0] for line in without.splitlines() if line[:1].isdigit()]
@@ -105,6 +107,9 @@ def test_holder_prompt_numbers_steps_and_drops_the_board_step_without_a_board():
     # 担い手欄の書き換えは、掲示板の有無にかかわらず攻撃・check_inより前
     for text in (without, with_board):
         assert text.index("replace_holder_lines(") < text.index("check_in(activity_id=")
+        assert text.index("壊れる場面を1つ") < text.index("get_timeline(") < text.index("check_in(activity_id=")
+        # 一覧のログはcheck_inの後に読む
+        assert text.index("check_in(activity_id=") < text.index("読むべきログ")
 
 
 def test_print_prompt_does_not_exec(monkeypatch, capsys):
