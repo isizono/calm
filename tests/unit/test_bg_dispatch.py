@@ -13,6 +13,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 from scripts.bg_dispatch import build_request, main  # noqa: E402
 
 _PARENT_KWARGS = {"parent_goal_handle": "orch-goal", "parent_condition_id": 12}
+_HOLDER_KWARGS = {
+    "holder_name": "holder-x",
+    "holder_session_id": "sess-123",
+    "holder_transcript": "/t/sess-123.jsonl",
+}
 
 
 def _build(**overrides):
@@ -22,6 +27,8 @@ def _build(**overrides):
         "worktree": "/w",
         **_PARENT_KWARGS,
     }
+    if overrides.get("role") in ("consultant", "observer"):
+        kwargs.update(_HOLDER_KWARGS)
     kwargs.update(overrides)
     return build_request(**kwargs)
 
@@ -94,6 +101,121 @@ class TestBuildRequest:
         text = _build()
         assert "退避先の設定なし" in text
 
+    def test_role_switches_template(self):
+        assert _build(role="consultant") != _build()
+
+    def test_consultant_activity_id_value_is_embedded(self):
+        text77 = _build(consultant_activity_id=77)
+        assert "activity_id=77" in text77
+        assert text77 != _build(consultant_activity_id=88)
+
+    def test_consultant_section_removal_restores_default_text(self):
+        with_consultant = _build(consultant_activity_id=77)
+        before, rest = with_consultant.split("\n\n## 相談先", 1)
+        after = rest.split("\n\n## やらないこと", 1)[1]
+        assert before + "\n\n## やらないこと" + after == _build()
+
+    def test_consultant_role_keeps_parent_check_values(self):
+        text = _build(role="consultant", activity_id=5, parent_goal_handle="p", parent_condition_id=3)
+        assert 'get_goal(handle="p")' in text
+        assert "id_raw=3の条件のboundが" in text
+        assert '{"type": "activity", "id_raw": 5}' in text
+
+    @pytest.mark.parametrize("section", ["最初にやること", "やらないこと", "記録"])
+    def test_shared_sections_identical_across_roles(self, section):
+        kwargs = {"completion": ["c"], "dont": ["d"], "pending_dir": "/p", "activity_id": 5}
+
+        def body(role):
+            text = _build(role=role, **kwargs)
+            return text.split(f"## {section}\n", 1)[1].split("\n\n## ", 1)[0]
+
+        shared = body("worker")
+        if section == "記録":
+            # 作業役だけが持つ記録の項目を除いた共通の末尾が、相談役にも同じ形で入る
+            assert shared.endswith(body("consultant").split("\n", 1)[1])
+        else:
+            assert shared == body("consultant")
+
+    def test_consultant_request_has_holder_watch_section(self):
+        text = _build(role="consultant")
+        watch = text.split("## 担い手の見張り(観測役と分担)\n", 1)[1].split("\n\n## ", 1)[0]
+        assert "holder-x(sessionId sess-123、transcript /t/sess-123.jsonl)" in watch
+        # 世代交代で替わる担い手を追うため、見るたびに担い手欄から読み直す
+        assert "担い手欄からsessionIdを読み直し" in watch
+        assert "`notify_when_idle`で購読する" in watch
+        # 生死・文脈の測定と「交代せよ」の送信は観測役の仕事で、相談役は持たない
+        assert "観測役が持つ" in watch
+        assert "相談役は生死・文脈の定期のcronを持たない" in watch
+        assert "--role observer" in watch
+        assert "osascript" not in watch
+
+    def test_worker_request_has_no_holder_watch_section(self):
+        assert "担い手の見張り" not in _build()
+        assert "担い手の見張り" not in _build(consultant_activity_id=77)
+
+    def test_observer_request_has_liveness_and_handoff_checks(self):
+        text = _build(role="observer")
+        watch = text.split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        assert "holder-x(sessionId sess-123、transcript /t/sess-123.jsonl)" in watch
+        assert "測って数字を出すだけで、判断も提案もしません" in text
+        assert "CronCreate" in watch
+        assert "statusがbusyのまま、transcriptが25分以上更新されていない" in watch
+        liveness = Path(__file__).resolve().parents[2] / "scripts" / "orch_liveness.py"
+        assert liveness.is_file()
+        assert f"python3 {liveness} --session-id <sessionId>" in watch
+        handoff = Path(__file__).resolve().parents[2] / "scripts" / "handoff_trigger.py"
+        assert handoff.is_file()
+        assert f"python3 {handoff} --session-id <sessionId> --role holder" in watch
+        assert "「交代せよ」を送る" in watch
+        assert "同じ相手に二重に送らない" in watch
+
+    def test_observer_dead_report_hands_successor_the_attack_first_step(self):
+        watch = _build(role="observer").split("## 担い手の見張り(常設の仕事)\n", 1)[1].split("\n\n## ", 1)[0]
+        dead = next(line for line in watch.splitlines() if line.startswith("DEADかSTUCKが出たら"))
+        # 観測役は後継を起こさず、報告を見て代わる窓口に状態節より先の攻撃を渡すだけ
+        assert "観測役は検知して報告するところまで" in dead
+        assert "代わる節の手順1から始める: check_inより前に" in dead
+        assert "要点節(3,000字まで)だけを読み" in dead
+        assert "条文番号と場面の主語付きで掲示板に書いてから代わる" in dead
+        # 後継はorch skillを読む前にこの段を踏むので、読み方も報告の1行に書き切る
+        assert "書き終えるまで、check_in・get_logs・orchの説明と掲示板の他の投稿は読まない" in dead
+        assert 'search(keyword「根の答え」、tags=["board","root-answer"]、entity_type=log)の結果から作成時刻が最も新しい1本' in dead
+
+    def test_observer_role_requires_holder_values(self):
+        with pytest.raises(ValueError):
+            build_request(
+                activity_id=1, activity_title="a", worktree="/w", role="observer",
+                **_PARENT_KWARGS,
+            )
+
+    def test_observer_role_rejects_consultant_activity_id(self):
+        with pytest.raises(ValueError):
+            build_request(
+                activity_id=1, activity_title="a", worktree="/w", role="observer",
+                consultant_activity_id=5, **_PARENT_KWARGS, **_HOLDER_KWARGS,
+            )
+
+    @pytest.mark.parametrize("missing", list(_HOLDER_KWARGS))
+    def test_consultant_role_requires_each_holder_value(self, missing):
+        kwargs = {k: v for k, v in _HOLDER_KWARGS.items() if k != missing}
+        with pytest.raises(ValueError):
+            build_request(
+                activity_id=1, activity_title="a", worktree="/w", role="consultant",
+                **_PARENT_KWARGS, **kwargs,
+            )
+
+    def test_worker_role_with_holder_rejected(self):
+        with pytest.raises(ValueError):
+            _build(holder_session_id="sess-123")
+
+    def test_unknown_role_rejected(self):
+        with pytest.raises(ValueError):
+            _build(role="reviewer")
+
+    def test_consultant_role_with_consultant_activity_id_rejected(self):
+        with pytest.raises(ValueError):
+            _build(role="consultant", consultant_activity_id=77)
+
 
 class TestMainCli:
     def test_main_prints_request_with_all_args(self, capsys):
@@ -127,6 +249,45 @@ class TestMainCli:
         assert 'get_goal(handle="orch-goal")' in out
         assert "id_raw=12の条件のboundが" in out
         assert "/tmp/pending" in out
+
+    _CLI_BASE = [
+        "--activity-id", "1", "--activity-title", "t", "--worktree", "/w",
+        "--parent-goal-handle", "g", "--parent-condition-id", "2",
+    ]
+    _CLI_HOLDER = [
+        "--holder-name", "holder-x", "--holder-session-id", "sess-123",
+        "--holder-transcript", "/t/sess-123.jsonl",
+    ]
+
+    def test_main_role_and_consultant_id_change_output(self, capsys):
+        main(self._CLI_BASE)
+        default = capsys.readouterr().out
+        main(self._CLI_BASE + ["--role", "consultant"] + self._CLI_HOLDER)
+        assert capsys.readouterr().out != default
+        main(self._CLI_BASE + ["--consultant-activity-id", "9"])
+        assert "activity_id=9" in capsys.readouterr().out
+
+    def test_main_rejects_role_consultant_with_consultant_activity_id(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main(self._CLI_BASE + ["--role", "consultant", "--consultant-activity-id", "9"])
+        assert exc_info.value.code == 2
+        assert "--consultant-activity-id" in capsys.readouterr().err
+
+    def test_main_consultant_embeds_holder_values(self, capsys):
+        main(self._CLI_BASE + ["--role", "consultant"] + self._CLI_HOLDER)
+        assert "holder-x(sessionId sess-123、transcript /t/sess-123.jsonl)" in capsys.readouterr().out
+
+    def test_main_rejects_consultant_without_holder(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main(self._CLI_BASE + ["--role", "consultant"] + self._CLI_HOLDER[:4])
+        assert exc_info.value.code == 2
+        assert "--holder-transcript" in capsys.readouterr().err
+
+    def test_main_rejects_holder_for_worker(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            main(self._CLI_BASE + self._CLI_HOLDER)
+        assert exc_info.value.code == 2
+        assert "--holder-" in capsys.readouterr().err
 
     def test_main_requires_parent_goal_handle(self, capsys):
         with pytest.raises(SystemExit) as exc_info:

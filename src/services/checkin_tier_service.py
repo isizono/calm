@@ -30,6 +30,7 @@ from src.infra import session_identity
 from src.services import (
     activity_service,
     ask_handover_service,
+    correction_service,
     goal_service,
     hint_service,
     response_budget,
@@ -89,6 +90,18 @@ _DECISION_CANDIDATES_GUIDE = (
     "add_decisionsで決定事項にしてadd_relationで候補と結ぶ（同じ決定事項が既にあればそれと結ぶ）。"
     "合意でなかったならretractする。曖昧ならユーザーに確かめる。"
     "閉じると、残りの候補が次のcheck_inで出る。"
+)
+
+# control.unlearned_correctionsの上限件数（超えた分はmoreに畳む）。
+UNLEARNED_CORRECTIONS_MAX = 3
+
+_UNLEARNED_CORRECTIONS_GUIDE = (
+    "人の訂正で、まだ教訓として届いていないもの。届く置き場に教訓を書き、置き場と発火の契機を書いた記録"
+    "（素タグlesson-delivery）をこの件とadd_relationで結ぶ。置き場は観測できるもの（check_inに出るnotes・"
+    "フィードバックエントリ）を優先し、配達の穴で選ぶ（tag notesの更新は生きた個体に届かない・大きいnotesは"
+    "天井で畳まれる・広いpre_toolはbgを止める）。届いたことの観測（素タグlesson-observed）は書き手以外が付ける"
+    "（CALMのscripts/corrections.py observe）。skill等の観測できない置き場なら届け先の記録に"
+    "lesson-unobservableも付ける。same_type_pendingは同じ型の件で、他の誤りの洗い出し待ち。"
 )
 
 # control.dependenciesの上限。
@@ -234,6 +247,29 @@ def _build_decision_candidates(candidates: list[dict], total: int) -> dict | Non
     return result
 
 
+def _build_unlearned_corrections(items: list[dict], total: int, same_type: list[int]) -> dict | None:
+    if not items and not same_type:
+        return None
+    shown = []
+    for c in items:
+        title = c["title"] or ""
+        if len(title) > DECISION_CANDIDATE_TITLE_MAX_CHARS:
+            title = title[:DECISION_CANDIDATE_TITLE_MAX_CHARS] + "…"
+        item = {"id": c["id"], "title": title, "delivered": c["delivered"], "observed": c["observed"]}
+        if c.get("recurred"):
+            item["recurred"] = True
+        strip_entity_id_inplace(item)
+        shown.append(item)
+    result: dict = {"items": shown, "guide": _UNLEARNED_CORRECTIONS_GUIDE}
+    if total > len(shown):
+        result["more"] = total - len(shown)
+    if same_type:
+        result["same_type_pending"] = [{"id": i} for i in same_type]
+        for item in result["same_type_pending"]:
+            strip_entity_id_inplace(item)
+    return result
+
+
 def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str | None) -> dict | None:
     """statusを変更する前に完結する読み取り（tag_notesの注入済み記録更新は除く）。
 
@@ -255,6 +291,11 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
     pinned_targets = _get_pinned_targets(conn, activity_id)
     decision_candidates = _build_decision_candidates(
         *_get_unpromoted_decision_candidates(conn, activity_id, direct["topic"], DECISION_CANDIDATES_MAX)
+    )
+
+    unlearned_corrections = _build_unlearned_corrections(
+        *correction_service.unresolved_corrections(conn, activity_id, direct["topic"], UNLEARNED_CORRECTIONS_MAX),
+        correction_service.same_type_pending(conn, activity_id, direct["topic"], UNLEARNED_CORRECTIONS_MAX),
     )
 
     materials_full = get_materials_by_relation_with_conn(conn, activity_id)
@@ -280,6 +321,7 @@ def _collect_static(conn: sqlite3.Connection, activity_id: int, session_id: str 
         "dependencies": dependencies,
         "pinned_targets": pinned_targets,
         "decision_candidates": decision_candidates,
+        "unlearned_corrections": unlearned_corrections,
         "materials": materials_full[:MATERIALS_MAX],
         "recent_decisions": recent_decisions,
         "latest_log": latest_log,
@@ -433,6 +475,7 @@ def collect_and_assemble(activity_id: int, session_id: str | None = None) -> dic
                 "neighbor_asks": neighbor_asks,
                 "recent_settled_asks": recent_settled_asks,
                 "decision_candidates": static["decision_candidates"],
+                "unlearned_corrections": static["unlearned_corrections"],
                 "dependencies": _cap_dependencies(static["dependencies"], activity_id),
             }
         )

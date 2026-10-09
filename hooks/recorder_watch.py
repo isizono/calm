@@ -46,6 +46,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from hooks.correction_marks import MARKS_FILE, prompt_text, read_mark_ids
 from hooks.hook_state import HookState
 from hooks.hook_transcript import (
     _extract_short_name,
@@ -304,6 +305,14 @@ def _find_boundary_index(chunkable: list[_Line]) -> int | None:
     return None
 
 
+def _candidate_label(raw: dict, mark_ids: set[str]) -> str:
+    """印の付いた人の発話なら、記録役に訂正かを判定させる札を返す。"""
+    prompt_id = raw.get("promptId")
+    if prompt_id and prompt_id in mark_ids and prompt_text(raw) is not None:
+        return f"[訂正候補 prompt_id={prompt_id} at={raw.get('timestamp', '')}]\n"
+    return ""
+
+
 def _normalize_line_text(entry: TranscriptEntry) -> str:
     parts: list[str] = []
     for block in entry.content:
@@ -377,6 +386,7 @@ def _render_chunk(
     no: int, activity_id: int | None, topics: list[dict] | None,
     start_uuid: str | None, end_uuid: str | None, cut_chunkable: list[_Line],
     unlinked_materials: list[int] | None = None,
+    mark_ids: set[str] | None = None,
 ) -> str:
     header = [
         f"# 片 {no:04d}",
@@ -389,7 +399,11 @@ def _render_chunk(
         ids = ", ".join(str(m) for m in unlinked_materials)
         header.append(f"- 未紐づけの記録: material {ids}")
     header += ["", "---", ""]
-    body_parts = [t for line in cut_chunkable if (t := _normalize_line_text(line.entry))]
+    mark_ids = mark_ids or set()
+    body_parts = [
+        _candidate_label(line.raw, mark_ids) + t
+        for line in cut_chunkable if (t := _normalize_line_text(line.entry))
+    ]
     return "\n".join(header) + "\n\n".join(body_parts) + "\n"
 
 
@@ -661,7 +675,10 @@ def _emit_new_chunk(
     chunk_path = run_dir / "chunks" / f"{no:04d}.md"
     chunk_path.parent.mkdir(parents=True, exist_ok=True)
     chunk_path.write_text(
-        _render_chunk(no, activity_id, topics, cursor.get("last_uuid"), end_uuid, cut_chunkable, unlinked_materials),
+        _render_chunk(
+            no, activity_id, topics, cursor.get("last_uuid"), end_uuid, cut_chunkable, unlinked_materials,
+            read_mark_ids(run_dir / MARKS_FILE),
+        ),
         encoding="utf-8",
     )
 
