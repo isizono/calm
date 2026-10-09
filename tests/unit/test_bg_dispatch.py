@@ -179,6 +179,7 @@ class TestBuildRequest:
         assert "条文番号と場面の主語付きで掲示板に書いてから代わる" in dead
         # 後継はorch skillを読む前にこの段を踏むので、読み方も報告の1行に書き切る
         assert "書き終えるまで、check_in・get_logs・orchの説明と掲示板の他の投稿は読まない" in dead
+        assert 'search(keyword「根の答え」、tags=["board","root-answer"]、entity_type=log)の結果から作成時刻が最も新しい1本' in dead
 
     def test_observer_role_requires_holder_values(self):
         with pytest.raises(ValueError):
