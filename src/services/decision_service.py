@@ -1,7 +1,8 @@
 """決定事項管理サービス"""
 import sqlite3
+from typing import cast
 
-from src.db import get_connection, row_to_dict
+from src.db import get_connection, inserted_row_id, row_to_dict
 from src.services.budget_service import count_entities_for_topics
 from src.services.citations_service import (
     apply_and_writeback_conversions,
@@ -155,11 +156,12 @@ def add_decisions(items: list[dict], caller_session_id: str | None = None) -> di
                     raise ValueError(title_err["error"]["message"])
 
                 # タグのバリデーション（tagsが指定された場合のみ）
-                parsed_tags = None
+                parsed_tags: list[tuple[str, str]] | None = None
                 if tags is not None:
-                    parsed_tags = validate_and_parse_tags(tags)
-                    if isinstance(parsed_tags, dict):
-                        raise ValueError(parsed_tags["error"]["message"])
+                    parsed = validate_and_parse_tags(tags)
+                    if isinstance(parsed, dict):
+                        raise ValueError(parsed["error"]["message"])
+                    parsed_tags = parsed
 
                 # layer:direction タグ付きitemはtitle必須（少数に保つ運用のため
                 # 一覧で一目で識別できる必要があり、通常decisionより入力の摩擦を高くしている）
@@ -187,7 +189,7 @@ def add_decisions(items: list[dict], caller_session_id: str | None = None) -> di
                     "INSERT INTO decisions (decision, reason, title) VALUES (?, ?, ?)",
                     (decision, reason, title),
                 )
-                decision_id = cursor.lastrowid
+                decision_id = inserted_row_id(cursor)
 
                 # 親 topic との belongs_to リレーションを記録
                 if topic_id is not None:
@@ -210,8 +212,9 @@ def add_decisions(items: list[dict], caller_session_id: str | None = None) -> di
                     tool_name="add_decisions",
                     table="decisions",
                 )
-                decision = converted["decision"]
-                reason = converted["reason"]
+                # 非 None で渡した field は変換後も非 None で返る
+                decision = cast(str, converted["decision"])
+                reason = cast(str, converted["reason"])
 
                 # 本文中の {{cite:X#NNN}} を citations テーブルに保存
                 upsert_citations_for_owner_with_conn(
