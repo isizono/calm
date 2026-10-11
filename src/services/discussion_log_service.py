@@ -1,8 +1,9 @@
 """議論ログ管理サービス"""
 import re
 import sqlite3
+from typing import Any
 
-from src.db import get_connection, row_to_dict
+from src.db import get_connection, inserted_row_id, row_to_dict
 from src.services.budget_service import count_entities_for_topics
 from src.services.citations_service import (
     apply_and_writeback_conversions,
@@ -68,7 +69,7 @@ def add_logs(items: list[dict], caller_session_id: str | None = None) -> dict:
             }
         }
 
-    created = []
+    created: list[dict[str, Any]] = []
     errors = []
 
     conn = get_connection()
@@ -88,11 +89,12 @@ def add_logs(items: list[dict], caller_session_id: str | None = None) -> dict:
                         raise ValueError("title and content cannot both be empty")
 
                 # タグのバリデーション（tagsが指定された場合のみ）
-                parsed_tags = None
+                parsed_tags: list[tuple[str, str]] | None = None
                 if tags is not None:
-                    parsed_tags = validate_and_parse_tags(tags)
-                    if isinstance(parsed_tags, dict):
-                        raise ValueError(parsed_tags["error"]["message"])
+                    parsed = validate_and_parse_tags(tags)
+                    if isinstance(parsed, dict):
+                        raise ValueError(parsed["error"]["message"])
+                    parsed_tags = parsed
 
                 # 親 topic の存在チェック (旧 FK 制約相当の不変条件を維持)
                 if topic_id is not None:
@@ -110,7 +112,7 @@ def add_logs(items: list[dict], caller_session_id: str | None = None) -> dict:
                     "INSERT INTO discussion_logs (title, content) VALUES (?, ?)",
                     (title, content),
                 )
-                log_id = cursor.lastrowid
+                log_id = inserted_row_id(cursor)
 
                 # 親 topic との belongs_to リレーションを記録
                 if topic_id is not None:
