@@ -32,7 +32,7 @@ import json
 import logging
 import subprocess
 import sys
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 import psutil
 
@@ -148,7 +148,7 @@ def _stream_spec(stream, *, stdout_stream=None):
 def _spawn_relay() -> subprocess.Popen:
     base_flags = _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
     relay_args = [sys.executable, "-c", _RELAY_SCRIPT]
-    relay_kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    relay_kwargs: dict[str, Any] = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         return subprocess.Popen(relay_args, creationflags=base_flags | _CREATE_BREAKAWAY_FROM_JOB, **relay_kwargs)
     except OSError as e:
@@ -191,10 +191,12 @@ class _RelayedProcess:
         return self.returncode
 
     def poll(self) -> int | None:
-        if self._finished:
+        # _handleがNoneになるのは__init__で対象が見つからなかったときだけで、そのとき_finishedも立っている
+        handle = self._handle
+        if self._finished or handle is None:
             return self.returncode
         try:
-            rc = self._handle.wait(timeout=0)
+            rc = handle.wait(timeout=0)
         except psutil.TimeoutExpired:
             return None
         except psutil.NoSuchProcess:
@@ -202,12 +204,14 @@ class _RelayedProcess:
         return self._finish(rc)
 
     def wait(self, timeout: float | None = None) -> int | None:
-        if self._finished:
+        handle = self._handle
+        if self._finished or handle is None:
             return self.returncode
         try:
-            rc = self._handle.wait(timeout=timeout)
+            rc = handle.wait(timeout=timeout)
         except psutil.TimeoutExpired as e:
-            raise subprocess.TimeoutExpired(str(self.pid), timeout) from e
+            # psutilはtimeoutを渡したときにしかTimeoutExpiredを出さないため、ここではtimeoutはNoneでない
+            raise subprocess.TimeoutExpired(str(self.pid), cast(float, timeout)) from e
         except psutil.NoSuchProcess:
             rc = None
         return self._finish(rc)
