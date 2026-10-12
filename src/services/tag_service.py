@@ -2,7 +2,7 @@
 import re
 import sqlite3
 import threading
-from typing import Literal
+from typing import Literal, cast
 
 from src.config import TAG_NOTES_DECAY_DAYS
 from src.db import get_connection, row_to_dict
@@ -654,9 +654,9 @@ def search_tags(
             like_tag_data: dict[int, dict] = {}
             like_ranks: dict[int, int] = {}
             for rank, row in enumerate(like_rows, start=1):
-                r = row_to_dict(row)
-                tag_id = r["id"]
-                like_tag_data[tag_id] = r
+                row_dict = row_to_dict(row)
+                tag_id = row_dict["id"]
+                like_tag_data[tag_id] = row_dict
                 like_ranks[tag_id] = rank
 
             # --- チャネル2: ベクトルKNN検索 ---
@@ -721,8 +721,8 @@ def search_tags(
                     tuple(missing_ids),
                 ).fetchall()
                 for row in missing_rows:
-                    r = row_to_dict(row)
-                    like_tag_data[r["id"]] = r
+                    row_dict = row_to_dict(row)
+                    like_tag_data[row_dict["id"]] = row_dict
 
             tags = []
             for tag_id, score in scored:
@@ -1044,7 +1044,8 @@ def update_tag(
             }
 
         # canonical先タグを解決
-        parsed_canonical = validate_and_parse_tags([canonical])
+        # 冒頭の検証で更新対象はちょうど1つと保証済みで、notes・archived の分岐は先に返るため、ここでは canonical は None でない
+        parsed_canonical = validate_and_parse_tags([cast(str, canonical)])
         if isinstance(parsed_canonical, dict):
             return parsed_canonical
         c_namespace, c_name = parsed_canonical[0]
@@ -1272,7 +1273,7 @@ def collect_tag_notes_for_injection(
             normal_tags.append(t)
             normal_parsed.append((ns, name))
 
-    if effective_mark:
+    if effective_mark and key is not None:
         with _injected_tags_lock:
             if key not in _injected_tags:
                 evict_for_new_key(_injected_tags, _INJECTED_TAGS_MAX_SESSIONS)
@@ -1635,11 +1636,10 @@ def demote_tag_notes(
         demoted_blocks = [note_sections[i]["block"] for i in unique_matched_indices]
         remaining_sections = [s for i, s in enumerate(note_sections) if i not in matched_set]
 
-        is_new = archive_material_id is None
         effective_archive_tags = archive_tags if archive_tags else [tag_str, DEMOTE_ARCHIVE_TAG]
         payload = "".join(demoted_blocks)
 
-        if is_new:
+        if archive_material_id is None:
             summary = f"{tag_str} のtag notesから退避した記録。"
             if reason:
                 stripped_reason = reason.strip()
@@ -1748,7 +1748,7 @@ def demote_tag_notes(
         "tag": tag_str,
         "material_id": material_id,
         "material_title": write_result["title"],
-        "material_created": is_new,
+        "material_created": archive_material_id is None,
         "demoted_sections": [_normalize_section_key(h) for h in demoted_headings],
         "pointers_added": pointers_added,
         "notes_length": {
