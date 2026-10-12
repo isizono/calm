@@ -120,7 +120,7 @@ class SessionManager:
             else read_liveness_timeout_sec()
         )
         self._on_session_removed = on_session_removed
-        self._shutdown_callback: Callable[[], None] | None = None
+        self._shutdown_callback: Callable[[], bool | None] | None = None
         self._shutdown_event = threading.Event()
         self._cancel_event = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
@@ -218,8 +218,11 @@ class SessionManager:
         self._last_seen.pop(session_id, None)
         return len(self._active_sessions)
 
-    def set_shutdown_callback(self, callback: Callable[[], None]) -> None:
-        """シャットダウン時に呼ばれるコールバックを設定する。"""
+    def set_shutdown_callback(self, callback: Callable[[], bool | None]) -> None:
+        """シャットダウン時に呼ばれるコールバックを設定する。
+
+        False を返すと停止を見送り、猶予期間からやり直す。
+        """
         self._shutdown_callback = callback
 
     def start_watchdog(self) -> None:

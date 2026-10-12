@@ -15,7 +15,7 @@ import copy
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 CutMode = Literal["tail_list", "stub_dict"]
 
@@ -383,7 +383,7 @@ def apply_budget(response: dict, policy: BudgetPolicy) -> dict:
             after = _total_chars(response, uncounted)
             over_budget = after > policy.budget_chars
 
-    truncated = {
+    truncated: dict[str, Any] = {
         "budget": policy.budget_chars,
         "before": before,
         "after": after,

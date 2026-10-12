@@ -19,7 +19,6 @@ tmp→``os.replace`` で更新するため inode が入れ替わり、data file 
 """
 from __future__ import annotations
 
-import itertools
 import json
 import re
 import unicodedata
@@ -121,10 +120,10 @@ def _resolve_collision(sessions: dict, base: str, self_key: str) -> tuple[str, b
     }
     if base not in taken:
         return base, False
-    for n in itertools.count(2):
-        cand = f"{base}-{n}"
-        if cand not in taken:
-            return cand, True
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    return f"{base}-{n}", True
 
 
 def _live_cli_session(cli_session_id: str, entry: dict, now: datetime) -> dict | None:

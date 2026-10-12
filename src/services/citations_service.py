@@ -15,7 +15,7 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
-from src.db import get_connection
+from src.db import get_connection, inserted_row_id
 from src.services.citations_pure import (
     OWNER_TEXT_FIELDS,
     TYPE_TO_TABLE,
@@ -293,7 +293,7 @@ def record_citation_event(
             extra_json,
         ),
     )
-    return int(cur.lastrowid)
+    return inserted_row_id(cur)
 
 
 def _utc_now_stamp() -> str:

@@ -10,7 +10,7 @@ import json
 import re
 import sqlite3
 
-from src.db import get_connection
+from src.db import get_connection, inserted_row_id
 from src.services.feedback_rules import (
     PENDING_STUMBLES_SQL,
     ConditionError,
@@ -242,7 +242,7 @@ def _apply_create(conn: sqlite3.Connection, name, existing, body, ref, strength,
            VALUES (?, ?, ?, ?, ?, ?)""",
         (name, body, ref, strength, timing, condition_json),
     )
-    return cur.lastrowid
+    return inserted_row_id(cur)
 
 
 def write_feedback_entry(

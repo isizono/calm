@@ -9,7 +9,7 @@ import textwrap
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 
 from sqlite_vec import serialize_float32
 
@@ -896,13 +896,13 @@ def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict] 
             resolved = _resolve_vec_rowids(conn, list(merged_distance.keys()))
             results = []
             for rowid, distance in merged_distance.items():
-                r = resolved.get(rowid)
-                if r is None:
+                hit = resolved.get(rowid)
+                if hit is None:
                     continue
                 results.append({
-                    "type": r["source_type"],
-                    "id": r["source_id"],
-                    "title": r["title"],
+                    "type": hit["source_type"],
+                    "id": hit["source_id"],
+                    "title": hit["title"],
                     "distance": distance,
                 })
             results.sort(key=lambda x: x["distance"])
@@ -927,13 +927,13 @@ def vector_retrieve(ctx: SearchContext, conn: sqlite3.Connection) -> list[dict] 
             resolved = _resolve_vec_rowids(conn, list(vec_data.keys()))
             results = []
             for rowid, distance in vec_data.items():
-                r = resolved.get(rowid)
-                if r is None:
+                hit = resolved.get(rowid)
+                if hit is None:
                     continue
                 results.append({
-                    "type": r["source_type"],
-                    "id": r["source_id"],
-                    "title": r["title"],
+                    "type": hit["source_type"],
+                    "id": hit["source_id"],
+                    "title": hit["title"],
                     "distance": distance,
                 })
 
@@ -1849,7 +1849,8 @@ def _normalize(
         limit=limit,
         offset=offset,
         fetch_limit=fetch_limit,
-        keyword_mode=keyword_mode,
+        # _validate で "and" / "or" 以外は弾いている
+        keyword_mode=cast(Literal["and", "or"], keyword_mode),
         include_details=include_details,
         date_after=date_after,
         date_before=date_before,

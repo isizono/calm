@@ -1,5 +1,6 @@
 """振る舞い管理サービス"""
 import logging
+from typing import Any
 
 from src.config import ALWAYS_POOL_CAPACITY, HABIT_MANIFEST_DECAY_DAYS
 from src.db import get_connection, row_to_dict
@@ -448,8 +449,8 @@ def update_habit(
             return gate_error
 
         # 動的SQL構築
-        set_parts = []
-        values = []
+        set_parts: list[str] = []
+        values: list[Any] = []
 
         if content is not None:
             set_parts.append("content = ?")

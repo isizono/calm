@@ -232,9 +232,9 @@ def extract_candidates(
                 for candidate in _extract_ask_candidates(entry, turn, exclusion_rules):
                     _try_add(candidate)
             elif is_user_message(ClaudeCodeHarness.to_entry(entry)):
-                candidate = _extract_correction_candidate(entry, turn, correction_patterns)
-                if candidate is not None:
-                    _try_add(candidate)
+                correction = _extract_correction_candidate(entry, turn, correction_patterns)
+                if correction is not None:
+                    _try_add(correction)
 
             turn += 1
 

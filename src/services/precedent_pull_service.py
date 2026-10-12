@@ -522,7 +522,7 @@ def collect_precedents_with_conn(
     full_item_locations: dict[int, tuple[int, int]] = {}
     for topic_id in topic_ids:
         topic_dec_ids = {dec["id"] for dec in topic_decisions[topic_id]}
-        decisions_out = []
+        decisions_out: list[dict] = []
         for dec in topic_decisions[topic_id]:
             did = dec["id"]
             owner = owner_of[did]
@@ -647,7 +647,7 @@ def pull_precedents(
 
         if routing["mode"] == "unavailable":
             guarantee = "routing_unavailable"
-            collected = {
+            collected: dict = {
                 "topics": [],
                 "budget": {"limit": budget, **_EMPTY_BUDGET_TEMPLATE},
                 "truncated": False,
