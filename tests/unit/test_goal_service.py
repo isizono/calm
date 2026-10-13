@@ -1079,6 +1079,13 @@ class TestFollowupConditionForDesign:
             "claude", "open", None, None,
         )
 
+    def test_same_statement_already_present_is_not_duplicated(self, temp_db):
+        act = self._act("design")
+        goal_id = _new_goal(
+            act, conditions=[{"statement": gs.FOLLOWUP_CONDITION_STATEMENT, "actor": "claude"}]
+        )["goal_id_raw"]
+        assert len(self._conditions(goal_id)) == 1
+
     @pytest.mark.parametrize("intent", ["implement", "discuss", None])
     def test_other_or_no_intent_does_not_append(self, temp_db, intent):
         act = self._act(intent)

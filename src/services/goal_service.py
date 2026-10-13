@@ -175,8 +175,8 @@ def _validate_condition_form(condition: object) -> dict:
 
 
 FOLLOWUP_CONDITION_STATEMENT = (
-    "後続の[作業]アクティビティを起票してこの条件に束縛したか、"
-    "不要な理由を書いてwaivedにした"
+    "後続の[作業]アクティビティを起票してこの条件に束縛し、条件をsatisfiedにしたか、"
+    "不要な理由を書いてwaivedにした（束縛しただけでopenのまま残さない）"
 )
 
 
@@ -373,8 +373,10 @@ def set_goal_with_conn(conn: sqlite3.Connection, activity_id: int, goal: dict | 
             if cond["bound_type"] is not None and not _bound_exists(conn, cond["bound_type"], cond["bound_id"]):
                 return _not_found(f"{cond['bound_type']} {cond['bound_id']} not found")
 
-        # 手書きの同趣旨の条件があっても重複判定はしない
-        if _has_intent_design(conn, activity_id):
+        # 同じ文言の条件が既にあれば足さない（手書きの別文言は重複とみなさない）
+        if _has_intent_design(conn, activity_id) and not any(
+            c["statement"] == FOLLOWUP_CONDITION_STATEMENT for c in normalized_conditions
+        ):
             normalized_conditions.append(
                 {
                     "statement": FOLLOWUP_CONDITION_STATEMENT,
