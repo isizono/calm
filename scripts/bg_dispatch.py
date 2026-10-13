@@ -108,12 +108,15 @@ _TEMPLATE = """あなたはCALMのアクティビティ「{activity_title}」の
 """
 
 
-# 作業役と相談役の依頼文で共通の節。片方だけ直して食い違わないよう、ここに1つだけ持つ
+# 作業役と相談役の依頼文で共通の節。片方だけ直して食い違わないよう、ここに1つだけ持つ。
+# 目的の読み方(purpose_line)だけは役ごとに差し込む
+_WORKER_PURPOSE = "goalのstatementをこの仕事の目的として読む。成果物ができたかでなく、statementが指す状態に近づいたかで判断する。"
+_CONSULTANT_PURPOSE = "渡された目的節を目的として読む。成果物ができたかでなく、目的節が指す状態に近づいたかで判断する。"
 _FIRST_STEPS = """## 最初にやること
 1. CALMでアクティビティ「{activity_title}」(activity_id={activity_id})を探してcheck_inする
 2. {goal_instruction}{parent_check_step}
 
-goalのstatementをこの仕事の目的として読む。成果物ができたかでなく、statementが指す状態に近づいたかで判断する。"""
+{purpose_line}"""
 
 _DONT = """## やらないこと
 - マージ、--delete-branchの使用{dont_block}"""
@@ -126,7 +129,7 @@ _CONSULTANT_BLOCK = """
 ## 相談先
 アクティビティ(activity_id={consultant_activity_id})の相談役は、兄弟ではなく相談先。上の兄弟の規則(質問を送らない)は相談役には当てはめない。
 - 宛先: 兄弟と同じ引き方(get_sessionsでそのactivity_idの行を探し、`claude agents --json`でpidのある行の今のnameを使う)
-- SendMessageで相談してよい。場面は、方針に迷うとき、手の結果が目的に近づいたか判断できないとき、人に返す前の分類(返す3項目に当たるか)
+- SendMessageで相談してよい。場面は、方針に迷うとき、手の結果が目的に近づいたか判断できないとき、人に返す前の分類。人に返してよいのは、人しか持たない事実・本人の価値判断・orchの「ユーザーに上げるもの」の3つだけで、問いがこのどれにも当たらないなら人に返さず、orchか自分で決める
 - 送る中身: 次の手と、その手に何を期待するか、結果。調べた事実はそのまま付ける
 - 返事は助言。結論と責任は自分とorchが持つ。宛先が空席・死んでいる・返事が無いときは待たず、自分で判断して進め、判断を報告に書く"""
 
@@ -233,6 +236,7 @@ def build_request(
         worktree=worktree,
         branch_line=(f"、ブランチ {branch}" if branch else ""),
         goal_instruction=goal_instruction,
+        purpose_line=_CONSULTANT_PURPOSE if role == "consultant" else _WORKER_PURPOSE,
         parent_check_step=parent_check_step,
         completion_block=completion_block,
         dont_block=dont_block,

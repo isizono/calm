@@ -94,8 +94,19 @@ class TestBuildRequest:
         text = _build()
         assert "退避先の設定なし" in text
 
-    def test_role_switches_template(self):
-        assert _build(role="consultant") != _build()
+    def test_worker_request_reads_goal_statement_as_purpose(self):
+        assert "goalのstatementを" in _build()
+
+    def test_consultant_request_has_role_phrases_and_no_worker_ones(self):
+        text = _build(role="consultant")
+        assert "実装も調査も" in text
+        assert "自分から終わらない" in text
+        assert "実装担当" not in text
+
+    def test_consultant_request_reads_given_purpose_section_not_goal_statement(self):
+        text = _build(role="consultant")
+        assert "goalのstatementを" not in text
+        assert "渡された目的節を目的として読む" in text
 
     def test_consultant_activity_id_value_is_embedded(self):
         text77 = _build(consultant_activity_id=77)
@@ -126,6 +137,9 @@ class TestBuildRequest:
         if section == "記録":
             # 作業役だけが持つ記録の項目を除いた共通の末尾が、相談役にも同じ形で入る
             assert shared.endswith(body("consultant").split("\n", 1)[1])
+        elif section == "最初にやること":
+            # 目的の読み方の1文(末尾)だけは役ごとに違う
+            assert shared.rsplit("\n\n", 1)[0] == body("consultant").rsplit("\n\n", 1)[0]
         else:
             assert shared == body("consultant")
 
