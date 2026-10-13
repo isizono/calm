@@ -123,6 +123,15 @@ def main() -> None:
         state = HookState(session_id)
         events = state.read_events()
 
+        # 3.2 外れた記録役の起こし直し（人の発話のときだけ。失敗しても他の配達を止めない）
+        if not is_nonhuman_turn(data.get("prompt")):
+            try:
+                from hooks.recorder_autostart_hook import revive_if_detached
+
+                revive_if_detached(data)
+            except Exception as e:
+                print(f"user_prompt_submit_hook.py recorder revive error: {e}", file=sys.stderr)
+
         # 3.5 add_ask通知の二重網（add_ask後の回答待ちhookが無いハーネスや、
         # 待機が途切れた場合のフォールバック）。identity解決には一切触れない。他のnudgeより優先する
         # （人間の回答が届いた事実は、記録忘れ等の促しより時宜性が高いため）。

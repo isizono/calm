@@ -783,36 +783,72 @@ class TestMaintenanceHintPromoteLine:
         assert "未処理の躓き3件" in reason
 
 
-class TestAgentTypeSuppressesUtteranceAndToolFail:
-    """サブエージェント発(agent_typeがtruthy)は発話タイミング・ツール失敗の
-    いずれも配達を止める（書き込みを禁止されたサブエージェントに促しを
-    届けても実行できないため）。実行直前の配達（block）は続ける。"""
+class TestAgentTypeDeliversBodyWithoutWritePrompts:
+    """サブエージェント発(agent_typeがtruthy)でも、当たったnotifyエントリの本文は
+    配達し、配達回数も数える。出さないのは書き込みを促す行（未処理の躓きの手入れの行・
+    bootstrapの促し）だけである。実行直前の配達（block）は変わらず続く。"""
 
-    def test_agent_type_suppresses_utterance_delivery(self, db, capsys):
+    def test_agent_type_delivers_utterance_body_without_hint(self, db, capsys):
         _create_entry(
             "stump-a",
+            body="Aの躓き",
             condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
         )
+        for _ in range(3):
+            assert fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")["ok"]
+        event = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt_id": "p1",
+            "prompt": "please help",
+        }
+        out = _run_main_with_event({**event, "agent_type": "general-purpose"}, capsys)
+        body = out["hookSpecificOutput"]["additionalContext"]
+        assert "Aの躓き" in body
+        assert "未処理の躓き" not in body
+        assert _row("stump-a")["delivered_count"] == 1
+
+    def test_without_agent_type_utterance_keeps_hint(self, db, capsys):
+        _create_entry(
+            "stump-a",
+            body="Aの躓き",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        for _ in range(3):
+            assert fs.add_feedback_note(name="stump-a", kind="stumble", body="踏んだ")["ok"]
         out = _run_main_with_event(
-            {
-                "hook_event_name": "UserPromptSubmit",
-                "session_id": "s1",
-                "prompt_id": "p1",
-                "prompt": "please help",
-                "agent_type": "general-purpose",
-            },
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt_id": "p1", "prompt": "please help"},
             capsys,
         )
-        assert out == {}
-        assert _row("stump-a")["delivered_count"] == 0
+        assert "未処理の躓き3件" in out["hookSpecificOutput"]["additionalContext"]
 
-    def test_agent_type_suppresses_tool_fail_delivery(self, db, capsys):
+    def test_agent_delivery_does_not_consume_parent_turn_mark(self, db, capsys):
+        _create_entry(
+            "stump-a",
+            body="Aの躓き",
+            condition={"tool": None, "all": [{"field": "prompt", "op": "regex", "value": "help"}]},
+        )
+        event = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s1",
+            "prompt_id": "p1",
+            "prompt": "please help",
+        }
+        out = _run_main_with_event({**event, "agent_type": "general-purpose", "agent_id": "a1"}, capsys)
+        assert "Aの躓き" in out["hookSpecificOutput"]["additionalContext"]
+        # 同じ区切りで親にも届く
+        out = _run_main_with_event(event, capsys)
+        assert "Aの躓き" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_agent_type_delivers_tool_fail_body_without_hint(self, db, capsys):
         _create_entry(
             "fail-a",
             body="タイムアウトの躓き",
             timing="tool_fail",
             condition={"tool": None, "all": [{"field": "error", "op": "regex", "value": "timeout"}]},
         )
+        for _ in range(3):
+            assert fs.add_feedback_note(name="fail-a", kind="stumble", body="踏んだ")["ok"]
         out = _run_main_with_event(
             {
                 "hook_event_name": "PostToolUseFailure",
@@ -824,8 +860,36 @@ class TestAgentTypeSuppressesUtteranceAndToolFail:
             },
             capsys,
         )
+        body = out["hookSpecificOutput"]["additionalContext"]
+        assert "タイムアウトの躓き" in body
+        assert "未処理の躓き" not in body
+        assert _row("fail-a")["delivered_count"] == 1
+
+    def test_agent_type_without_match_gets_no_bootstrap(self, db, capsys):
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {},
+                "error": "boom",
+                "agent_type": "general-purpose",
+            },
+            capsys,
+        )
         assert out == {}
-        assert _row("fail-a")["delivered_count"] == 0
+        # 親セッションの促しは消費されない
+        parent = _run_main_with_event(
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {},
+                "error": "boom",
+            },
+            capsys,
+        )
+        assert "get_feedback_entries" in parent["hookSpecificOutput"]["additionalContext"]
 
     def test_agent_type_does_not_suppress_pre_tool_block(self, db, capsys):
         _create_entry(
@@ -842,6 +906,28 @@ class TestAgentTypeSuppressesUtteranceAndToolFail:
             capsys,
         )
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+    def test_agent_type_pre_tool_block_omits_hint(self, db, capsys):
+        _create_entry(
+            "danger", strength="block", timing="pre_tool", body="危険",
+            condition={"tool": "Bash", "all": []},
+        )
+        for _ in range(3):
+            assert fs.add_feedback_note(name="danger", kind="stumble", body="踏んだ")["ok"]
+        out = _run_main_with_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s1",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf /"},
+                "agent_type": "general-purpose",
+            },
+            capsys,
+        )
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "危険" in reason
+        assert "未処理の躓き" not in reason
 
 
 class TestNonhumanTurnSuppressesUtteranceDelivery:
@@ -894,3 +980,146 @@ class TestNonhumanTurnSuppressesUtteranceDelivery:
             capsys,
         )
         assert _row("stump-human")["delivered_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# outputタイミング（Claude自身の直前の出力文への照合）
+# ---------------------------------------------------------------------------
+
+_OUTPUT_COND = {"tool": None, "all": [{"field": "text", "op": "regex", "value": "既に記録"}]}
+
+
+def _assistant_line(*blocks: dict) -> str:
+    return json.dumps({"type": "assistant", "message": {"content": list(blocks)}}, ensure_ascii=False) + "\n"
+
+
+def _append(path: Path, data: str) -> None:
+    with open(path, "ab") as f:
+        f.write(data.encode("utf-8"))
+
+
+def _ups(capsys, transcript: Path, *, prompt: str = "次の発話", prompt_id: str = "p", session_id: str = "s-out") -> dict:
+    return _run_main_with_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "prompt_id": prompt_id,
+            "prompt": prompt,
+            "transcript_path": str(transcript),
+        },
+        capsys,
+    )
+
+
+@pytest.fixture
+def transcript(tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_text("")
+    return path
+
+
+class TestOutputTiming:
+    def _entry(self, name="out-1"):
+        return _create_entry(name, timing="output", condition=_OUTPUT_COND, body="再発ならnoteを残す")
+
+    def test_matching_assistant_text_delivered_on_next_prompt(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")  # 既読位置の初期化
+        _append(transcript, _assistant_line({"type": "text", "text": "それは既に記録済みです"}))
+        out = _ups(capsys, transcript, prompt_id="p1")
+        body = out["hookSpecificOutput"]["additionalContext"]
+        assert "再発ならnoteを残す" in body
+        assert _row("out-1")["delivered_count"] == 1
+
+    def test_only_assistant_text_blocks_are_matched(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line(
+            {"type": "thinking", "thinking": "既に記録"},
+            {"type": "tool_use", "name": "Bash", "input": {"command": "echo 既に記録"}},
+        ))
+        _append(transcript, json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "既に記録"}]}}) + "\n")
+        _append(transcript, json.dumps({"type": "user", "message": {"content": [
+            {"type": "text", "text": "既に記録"}]}}, ensure_ascii=False) + "\n")
+        assert _ups(capsys, transcript, prompt_id="p1") == {}
+        assert _row("out-1")["delivered_count"] == 0
+
+    def test_partial_line_is_not_read_and_resumes_next_call(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        line = _assistant_line({"type": "text", "text": "既に記録済み"})
+        _append(transcript, line[:20])  # 書きかけ（改行未到達）
+        assert _ups(capsys, transcript, prompt_id="p1") == {}
+        _append(transcript, line[20:])
+        out = _ups(capsys, transcript, prompt_id="p2")
+        assert "再発ならnoteを残す" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_already_read_text_is_not_matched_again(self, db, capsys, transcript, monkeypatch):
+        monkeypatch.setattr(hook, "OUTPUT_COOLDOWN_TURNS", 0)
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        assert _ups(capsys, transcript, prompt_id="p1") != {}
+        assert _ups(capsys, transcript, prompt_id="p2") == {}
+
+    def test_history_before_first_sight_is_not_matched(self, db, capsys, transcript):
+        self._entry()
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        assert _ups(capsys, transcript, prompt_id="p0") == {}
+        assert _row("out-1")["delivered_count"] == 0
+
+    def test_cursor_stores_offset_only_not_text(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        _ups(capsys, transcript, prompt_id="p1")
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT * FROM feedback_output_cursor WHERE session_id = 's-out'").fetchone()
+        finally:
+            conn.close()
+        assert row["byte_offset"] == transcript.stat().st_size
+        assert "既に記録" not in json.dumps(dict(row), ensure_ascii=False)
+
+    def test_cooldown_suppresses_redelivery_until_n_turns_pass(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        hits = []
+        for i in range(1, hook.OUTPUT_COOLDOWN_TURNS + 2):
+            _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+            hits.append(_ups(capsys, transcript, prompt_id=f"p{i}") != {})
+        # 1回目は届き、N-1回は抑えられ、N回後にまた届く
+        assert hits == [True] + [False] * (hook.OUTPUT_COOLDOWN_TURNS - 1) + [True]
+
+    def test_cooldown_is_per_session(self, db, capsys, transcript):
+        self._entry()
+        for sid in ("s-a", "s-b"):
+            _ups(capsys, transcript, session_id=sid, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        assert _ups(capsys, transcript, session_id="s-a", prompt_id="p1") != {}
+        assert _ups(capsys, transcript, session_id="s-b", prompt_id="p1") != {}
+
+    def test_delivered_on_nonhuman_turn(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        out = _ups(capsys, transcript, prompt_id="p1", prompt="<task-notification>done</task-notification>")
+        assert "再発ならnoteを残す" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_utterance_entry_still_suppressed_on_nonhuman_turn(self, db, capsys, transcript):
+        _create_entry("utt-1", condition={"tool": None, "all": []})
+        out = _ups(capsys, transcript, prompt="<task-notification>done</task-notification>")
+        assert out == {}
+        assert _row("utt-1")["delivered_count"] == 0
+
+    def test_subagent_prompt_does_not_deliver_output(self, db, capsys, transcript):
+        self._entry()
+        _ups(capsys, transcript, prompt_id="p0")
+        _append(transcript, _assistant_line({"type": "text", "text": "既に記録済み"}))
+        out = _run_main_with_event(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-out", "prompt_id": "p1",
+             "prompt": "x", "transcript_path": str(transcript), "agent_type": "builder"},
+            capsys,
+        )
+        assert out == {}

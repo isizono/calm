@@ -801,7 +801,7 @@ def update_tag(
         tag: タグ文字列（例: "domain:calm", "hooks"）
         notes: 教訓・運用ルールのテキスト（全文置換）
         canonical: エイリアス先タグ文字列。設定するとtagがcanonicalのエイリアスになる。
-                   ""（空文字）でエイリアス解除。上書き可能だが、旧canonical先に
+                   ""（空文字、空白のみも同じ）でエイリアス解除。上書き可能だが、旧canonical先に
                    付け替え済みの紐付けは戻らない。
         rename: 新しいタグ名。namespace変更も可能（例: "hooks" → "domain:hooks"）。
                 新名が既存タグと衝突する場合はエラー。
@@ -1015,8 +1015,9 @@ def update_tag(
                 return {"tag": tag_str, "archived": False, "updated": True}
 
         # --- canonical 更新 ---
-        # canonical="" → エイリアス解除
-        if canonical == "":
+        # canonical="" または空白のみ → エイリアス解除
+        # （クライアントによっては空文字引数が欠落するため、空白1文字での解除を許す）
+        if canonical is not None and not canonical.strip():
             conn.execute(
                 "UPDATE tags SET canonical_id = NULL WHERE id = ?",
                 (tag_id,),

@@ -185,6 +185,11 @@ class _RelayedProcess:
             self._finished = True
             self.returncode = _UNKNOWN_RETURNCODE
 
+    def _finish(self, rc: int | None) -> int:
+        self._finished = True
+        self.returncode = _UNKNOWN_RETURNCODE if rc is None else rc
+        return self.returncode
+
     def poll(self) -> int | None:
         if self._finished:
             return self.returncode
@@ -194,21 +199,18 @@ class _RelayedProcess:
             return None
         except psutil.NoSuchProcess:
             rc = None
-        self._finished = True
-        self.returncode = _UNKNOWN_RETURNCODE if rc is None else rc
-        return self.returncode
+        return self._finish(rc)
 
     def wait(self, timeout: float | None = None) -> int | None:
         if self._finished:
             return self.returncode
         try:
-            self.returncode = self._handle.wait(timeout=timeout)
+            rc = self._handle.wait(timeout=timeout)
         except psutil.TimeoutExpired as e:
             raise subprocess.TimeoutExpired(str(self.pid), timeout) from e
         except psutil.NoSuchProcess:
-            pass
-        self._finished = True
-        return self.returncode
+            rc = None
+        return self._finish(rc)
 
     def terminate(self) -> None:
         if self._handle is not None:

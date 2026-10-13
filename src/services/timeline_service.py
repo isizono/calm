@@ -3,6 +3,7 @@
 トピックまたはアクティビティに紐づくdecision・log・materialを時系列で返す。
 """
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 
 from src.db import get_connection
@@ -17,7 +18,7 @@ MAX_LIMIT = 100
 def get_timeline(
     topic_id: int | None = None,
     activity_id: int | None = None,
-    entity_types: list[str] | None = None,
+    entity_types: Sequence[str] | None = None,
     before: str | None = None,
     limit: int = 50,
     order: str = "desc",

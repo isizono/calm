@@ -103,6 +103,8 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("CALM_LAUNCHER_MAX_RETRIES", None, "launcherの起動リトライ上限。未設定なら既定の挙動", "internal"),
     EnvVar("CALM_LAUNCHER_STDIN_EOF_GRACE_SEC", "10", "launcherがstdin EOF後に待つ猶予（秒）", "internal"),
     EnvVar("CALM_AUTO_SHUTDOWN_SEC", None, "最後のセッションが消えてからサーバーを自動停止するまでの猶予（秒）。未設定なら自動停止しない", "internal"),
+    EnvVar("CALM_STALENESS_CHECK_INTERVAL_SEC", "3600", "起動後にコードが更新されていないかを確認する間隔（秒）。0で陳腐化検知による自動再起動を無効化", "internal"),
+    EnvVar("CALM_STALENESS_DEBOUNCE_SEC", "20", "更新を検知してから、再確認して自動再起動に進むまでの待ち（秒）", "internal"),
     EnvVar("CALM_SESSION_LIVENESS_TIMEOUT_SEC", "300", "heartbeatが途絶したセッションを失効させるまでの時間（秒）", "internal"),
     EnvVar("CALM_SESSION_REGISTRY_PATH", None, "セッション別名対応表のパス", "internal"),
     EnvVar("CALM_CLAUDE_SESSIONS_DIR", None, "Claude Codeのセッションディレクトリの場所", "internal"),

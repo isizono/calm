@@ -2,8 +2,9 @@
 import logging
 import re
 import sqlite3
+from typing import Any
 
-from src.db import get_connection, row_to_dict
+from src.db import get_connection, inserted_row_id, row_to_dict
 from src.services import ask_handover_service, goal_service
 from src.services.citations_service import (
     apply_and_writeback_conversions,
@@ -259,7 +260,7 @@ def add_activity(
             "VALUES (?, ?, ?)",
             (title, description, 'pending'),
         )
-        activity_id = cursor.lastrowid
+        activity_id = inserted_row_id(cursor)
 
         # タグをリンク
         tag_ids = ensure_tag_ids(conn, parsed_tags)
@@ -280,8 +281,12 @@ def add_activity(
             tool_name="add_activity",
             table="activities",
         )
-        title = converted["title"]
-        description = converted["description"]
+        # 非 None で渡した field は変換後も非 None で返る
+        converted_title = converted["title"]
+        converted_description = converted["description"]
+        assert converted_title is not None and converted_description is not None
+        title = converted_title
+        description = converted_description
 
         # 本文中の {{cite:X#NNN}} を citations テーブルに保存
         upsert_citations_for_owner_with_conn(
@@ -317,7 +322,7 @@ def add_activity(
         tag_text = " ".join(tag_strings) if tag_strings else ""
         generate_and_store_embedding("activity", activity_id, build_embedding_text(title, description, tag_text))
 
-        result = {"activity_id": activity_id}
+        result: dict[str, Any] = {"activity_id": activity_id}
         # intent一覧は固定の約1KBなので、intentを選び終えている呼び出しには返さない（#804）
         if not any(namespace == "intent" for namespace, _ in parsed_tags):
             try:
@@ -382,11 +387,12 @@ def get_activities(
         と同じ理由）。本関数自体は切り詰めを行わない
     """
     # タグのバリデーション（tags指定時のみ）
-    parsed_tags = None
+    parsed_tags: list[tuple[str, str]] | None = None
     if tags is not None:
-        parsed_tags = validate_and_parse_tags(tags, required=True)
-        if isinstance(parsed_tags, dict):
-            return parsed_tags
+        parsed = validate_and_parse_tags(tags, required=True)
+        if isinstance(parsed, dict):
+            return parsed
+        parsed_tags = parsed
 
     if limit < 1:
         return {
@@ -769,11 +775,12 @@ def update_activity(
         }
 
     # タグのバリデーション（tags指定時のみ）
-    parsed_tags = None
+    parsed_tags: list[tuple[str, str]] | None = None
     if tags is not None:
-        parsed_tags = validate_and_parse_tags(tags, required=True)
-        if isinstance(parsed_tags, dict):
-            return parsed_tags
+        parsed = validate_and_parse_tags(tags, required=True)
+        if isinstance(parsed, dict):
+            return parsed
+        parsed_tags = parsed
 
     # titleのバリデーション
     title_err = validate_title(title)
@@ -900,8 +907,8 @@ def update_activity(
         converted_description = converted_fields.get("description")
 
         # 動的SQL構築: 指定されたフィールドのみUPDATEする
-        set_parts = []
-        values = []
+        set_parts: list[str] = []
+        values: list[Any] = []
 
         if status is not None:
             set_parts.append("status = ?")

@@ -6,6 +6,7 @@ machine_error で繰り返し観測された取り違えだけを正しい名前
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -15,8 +16,28 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 # ツール名 -> {取り違えた名前: 正しい名前}。正しい名前が未指定のときだけ書き換える。
 _RENAMES: dict[str, dict[str, str]] = {
-    "search": {"query": "keyword", "type": "entity_type"},
+    "search": {
+        "query": "keyword",
+        "type": "entity_type",
+        "types": "entity_type",
+        "entity_types": "entity_type",
+        "type_filter": "entity_type",
+    },
+    "search_tags": {"keyword": "query"},
+    "get_material": {"id": "material_id"},
+    "get_by_ids": {"ids": "items"},
+    "add_logs": {"entries": "items", "logs": "items"},
+    "add_decisions": {"entries": "items", "decisions": "items"},
 }
+
+# 配列を JSON 文字列のまま渡されたときに配列へ戻す引数名。名前だけで判定するので、
+# 同名で str 型の引数を持つツールが増えたらツール別に持つ。entity_type は search 専用の
+# 分岐で扱う（他ツールの str 型 entity_type には触れない）。search の keyword は
+# str | list[str] で、"[abc]" のような文字列が正当な検索語でもありうるため復元しない。
+_LIST_ARGS = {"items", "tags", "related", "targets", "changes"}
+
+# get_by_ids の items に "decision:123" の文字列で書かれた要素を dict に直す。
+_TYPED_ID = re.compile(r"(topic|decision|activity|log|material):(\d+)")
 
 # get_logs / get_decisions は topic_id・activity_id を entity_type + entity_id に直す。
 _ENTITY_TOOLS = {"get_logs", "get_decisions"}
@@ -28,13 +49,24 @@ _ITEMS_WRAP: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "add_decisions": (("topic_id", "decision", "reason"), ("title", "tags")),
 }
 
-# 書き換えでは直せない取り違えに添える、正しい呼び方（必須引数が欠けたときのみ）。
-_USAGE: dict[str, tuple[str, str]] = {
-    "get_by_ids": ("items", 'get_by_ids(items=[{"type": "decision", "id": 123}])'),
-    "add_logs": ("items", 'add_logs(items=[{"topic_id": 1, "content": "..."}])'),
+# 書き換えでは直せない取り違えに添える、(必須引数の列, 正しい呼び方)。列のうち欠けている
+# ものを全部挙げる。ここに載せない必須引数の欠落は通常のバリデーションに任せる。
+_USAGE: dict[str, tuple[tuple[str, ...], str]] = {
+    "get_by_ids": (("items",), 'get_by_ids(items=[{"type": "decision", "id": 123}])'),
+    "add_logs": (("items",), 'add_logs(items=[{"topic_id": 1, "content": "..."}])'),
     "add_decisions": (
-        "items",
+        ("items",),
         'add_decisions(items=[{"topic_id": 1, "decision": "...", "reason": "..."}])',
+    ),
+    "check_in": (("activity_id",), "check_in(activity_id=123)"),
+    "update_goal": (
+        ("goal_id",),
+        'update_goal(goal_id=1, changes=[{"op": "set", "id": 10, "state": "satisfied"}])'
+        "（goal_id は get_goal(handle=...) で引く）",
+    ),
+    "add_material": (
+        ("title", "content", "tags", "source"),
+        'add_material(title="...", content="...", tags=["domain:x"], source="出典の説明")',
     ),
 }
 
@@ -78,11 +110,58 @@ def _strip_close_tags(value: Any) -> Any:
     return value
 
 
+def _comparable(value: Any) -> Any:
+    """別名同士の値が一致するかを、JSON 文字列の復元と1要素配列の取り出しを済ませた形で比べる。"""
+    if isinstance(value, str) and value.lstrip().startswith("["):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return value
+    if isinstance(value, list) and len(value) == 1:
+        return value[0]
+    return value
+
+
 def _rewrite(tool: str, args: dict[str, Any]) -> None:
+    renamed: dict[str, str] = {}  # 正しい名前 -> 値を渡してきた別名
     for wrong, right in _RENAMES.get(tool, {}).items():
         if wrong in args:
             value = args.pop(wrong)
+            # 正しい名前が直接渡されていれば、別名の値が違ってもそれを優先して別名を捨てる
+            # （正しい名前が書けている呼び出しは意図が明確なため）。別名同士で値が
+            # 食い違うときは、どちらが意図か決められないのでエラーにする。
+            if right in renamed and _comparable(args[right]) != _comparable(value):
+                raise ToolError(
+                    f"{tool}: {renamed[right]} と {wrong} は同じ引数 {right} の別名で、"
+                    f"値が食い違っています。{right} だけを指定してください"
+                )
+            if right not in args:
+                renamed[right] = wrong
             args.setdefault(right, value)
+
+    list_keys = _LIST_ARGS | ({"entity_type"} if tool == "search" else set())
+    for key in list_keys & args.keys():
+        value = args[key]
+        if isinstance(value, str) and value.lstrip().startswith("["):
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                continue
+            if isinstance(decoded, list):
+                args[key] = decoded
+
+    # entity_type は単一値。1要素の配列だけ中身を取り出す（複数はそのままエラーにする）。
+    entity_type = args.get("entity_type")
+    if tool == "search" and isinstance(entity_type, list) and len(entity_type) == 1:
+        args["entity_type"] = entity_type[0]
+
+    if tool == "get_by_ids" and isinstance(args.get("items"), list):
+        args["items"] = [
+            {"type": m[1], "id": int(m[2])}
+            if isinstance(v, str) and (m := _TYPED_ID.fullmatch(v.strip()))
+            else v
+            for v in args["items"]
+        ]
 
     if tool in _ENTITY_TOOLS and "entity_type" not in args and "entity_id" not in args:
         for kind in ("topic", "activity"):
@@ -114,8 +193,11 @@ class ArgAliasMiddleware(Middleware):
             args.update(_strip_close_tags(args))
             _rewrite(tool, args)
             usage = _USAGE.get(tool)
-            if usage and usage[0] not in args:
-                raise ToolError(
-                    f"{tool}: 必須引数 {usage[0]} がありません。正しい呼び方: {usage[1]}"
-                )
+            if usage:
+                missing = [k for k in usage[0] if k not in args]
+                if missing:
+                    raise ToolError(
+                        f"{tool}: 必須引数 {', '.join(missing)} がありません。"
+                        f"正しい呼び方: {usage[1]}"
+                    )
         return await call_next(context)

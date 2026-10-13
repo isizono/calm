@@ -21,10 +21,13 @@ from src.services.feedback_rules import (
 
 _NAME_RE = re.compile(r"[a-z0-9-]+")
 _VALID_STRENGTHS = ("notify", "block")
-_VALID_TIMINGS = ("utterance", "tool_fail", "pre_tool")
+_VALID_TIMINGS = ("utterance", "tool_fail", "pre_tool", "output")
 _VALID_KINDS = ("stumble", "note")
 
-BODY_MAX_LEN = 100
+# 新規作成と本文を変える更新に掛ける上限。DBのCHECK(100字)は、上限導入前に
+# 書かれた既存エントリを壊さないため据え置く。
+BODY_MAX_LEN = 50
+LEGACY_BODY_MAX_LEN = 100
 REF_MAX_LEN = 500
 NOTE_BODY_MAX_LEN = 500
 
@@ -130,11 +133,19 @@ def get_feedback_entries(
 # ---------------------------------------------------------------------------
 
 
-def _require_body(body) -> str:
+def _require_body(body, existing_body: str | None = None) -> str:
+    """bodyを検査する。existing_bodyと同一の本文は、上限導入前の長い本文でも通す
+    （条件だけの更新を妨げないため）。"""
     if not isinstance(body, str) or not body.strip():
         raise _Rejected(_reject("VALIDATION_ERROR", "body は非空文字列"))
-    if len(body) > BODY_MAX_LEN:
-        raise _Rejected(_reject("VALIDATION_ERROR", f"body は{BODY_MAX_LEN}字以内"))
+    if len(body) > LEGACY_BODY_MAX_LEN:
+        raise _Rejected(_reject("VALIDATION_ERROR", f"body は{LEGACY_BODY_MAX_LEN}字以内"))
+    if len(body) > BODY_MAX_LEN and body != existing_body:
+        raise _Rejected(_reject(
+            "VALIDATION_ERROR",
+            f"body は{BODY_MAX_LEN}字以内の一言にする(現在{len(body)}字)。"
+            f"長い説明はref({REF_MAX_LEN}字まで)に置き、bodyは参照先を指す一言に縮める",
+        ))
     return body
 
 
@@ -187,7 +198,7 @@ def _apply_update(conn: sqlite3.Connection, existing, body, ref, strength, timin
     if existing is None or existing["deleted_at"] is not None:
         raise _Rejected(_reject("NOT_FOUND", "対象のエントリが見つからない(未作成または削除済み)"))
     _check_read_mark(conn, existing["id"], read_mark)
-    body = _require_body(body)
+    body = _require_body(body, existing["body"])
     ref = _check_ref(ref)
     normalized = _validate_content(strength, timing, condition)
     conn.execute(
@@ -211,7 +222,7 @@ def _apply_create(conn: sqlite3.Connection, name, existing, body, ref, strength,
         # どちらが返るかが変更経路によって食い違わないようにするため)。
         _check_read_mark(conn, existing["id"], read_mark)
 
-    body = _require_body(body)
+    body = _require_body(body, existing["body"] if existing is not None else None)
     ref = _check_ref(ref)
     normalized = _validate_content(strength, timing, condition)
     condition_json = json.dumps(normalized, ensure_ascii=False)

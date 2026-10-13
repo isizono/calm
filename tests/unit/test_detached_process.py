@@ -401,3 +401,28 @@ def test_relayed_process_poll_returns_sentinel_when_psutil_cannot_determine_exit
     assert proc.returncode == detached_process._UNKNOWN_RETURNCODE
     # 確定後は再度psutilへ問い合わせずキャッシュ値を返す
     assert proc.poll() == detached_process._UNKNOWN_RETURNCODE
+
+
+def test_relayed_process_wait_returns_sentinel_when_process_already_gone(monkeypatch):
+    """wait()中に対象が消えていても、Noneで確定させず以後のpoll()で終了と判定できる"""
+    fake = _FakePsutilProcess(4242)
+    fake._wait_exc = psutil.NoSuchProcess(4242)
+    monkeypatch.setattr(detached_process.psutil, "Process", lambda pid: fake)
+
+    proc = detached_process._RelayedProcess(4242)
+
+    assert proc.wait(timeout=5) == detached_process._UNKNOWN_RETURNCODE
+    assert proc.returncode == detached_process._UNKNOWN_RETURNCODE
+    assert proc.poll() == detached_process._UNKNOWN_RETURNCODE
+
+
+def test_relayed_process_wait_returns_sentinel_when_psutil_cannot_determine_exit_code(monkeypatch):
+    """psutilのwait()がNone(終了コード不明)を返しても、wait()はNoneを返さない"""
+    fake = _FakePsutilProcess(4242)
+    fake._wait_result = None
+    monkeypatch.setattr(detached_process.psutil, "Process", lambda pid: fake)
+
+    proc = detached_process._RelayedProcess(4242)
+
+    assert proc.wait() == detached_process._UNKNOWN_RETURNCODE
+    assert proc.poll() == detached_process._UNKNOWN_RETURNCODE

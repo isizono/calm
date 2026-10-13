@@ -642,13 +642,25 @@ def execute_query(query: str, params: tuple = ()) -> list[sqlite3.Row]:
         conn.close()
 
 
+def inserted_row_id(cursor: sqlite3.Cursor) -> int:
+    """INSERT 直後の cursor から新しい行の id を返す。
+
+    sqlite3 の lastrowid は型上 None になりうるが、rowid を持つテーブルへの
+    INSERT が成功した直後は必ず値が入る。None なら INSERT されていないので例外にする。
+    """
+    row_id = cursor.lastrowid
+    if row_id is None:
+        raise RuntimeError("INSERT did not produce a row id")
+    return row_id
+
+
 def execute_insert(query: str, params: tuple = ()) -> int:
     """INSERT クエリを実行して新しいIDを返す"""
     conn = get_connection()
     try:
         cursor = conn.execute(query, params)
         conn.commit()
-        return cursor.lastrowid
+        return inserted_row_id(cursor)
     except sqlite3.IntegrityError:
         conn.rollback()
         raise
