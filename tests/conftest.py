@@ -248,7 +248,7 @@ def temp_db(_temp_db_template):
     """
     from src.env_compat import env_pop, env_set
     from src.services.checkin_tier_service import _greeted_sessions
-    from src.services.tag_service import _injected_tags
+    from src.services.tag_service import _fold_pointer_shown, _injected_tags
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "test.db")
         shutil.copyfile(_temp_db_template, db_path)
@@ -261,6 +261,7 @@ def temp_db(_temp_db_template):
         # DISCUSSION_DB_PATHより優先されるため、同じ隔離パスで上書きする。
         env_set("CALM_DB_PATH", db_path)
         _injected_tags.clear()
+        _fold_pointer_shown.clear()
         _greeted_sessions.clear()
         yield db_path
         if "DISCUSSION_DB_PATH" in os.environ:

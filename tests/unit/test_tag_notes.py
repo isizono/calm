@@ -1921,3 +1921,26 @@ class TestTagNotesDecay:
             assert "search_tags(include_notes=True)" in by_tag["domain:mixed-normal"]
         finally:
             conn.close()
+
+
+class TestFoldedTagDeliveredOnNextMarkedPath:
+    """天井で畳んだタグ（配信済みから外されたタグ）は次のmark=True経路で全文が届く。"""
+
+    def test_released_tag_gets_full_notes_on_next_call(self, temp_db):
+        from src.db import get_connection
+        from src.services.tag_service import release_folded_tag
+
+        conn = get_connection()
+        try:
+            conn.execute("INSERT INTO tags (namespace, name, notes) VALUES ('domain', 'fold', '全文')")
+            conn.commit()
+            first = collect_tag_notes_for_injection(conn, ["domain:fold"], session_id="sess-f")
+            assert first == [{"tag": "domain:fold", "notes": "全文"}]
+            assert collect_tag_notes_for_injection(conn, ["domain:fold"], session_id="sess-f") is None
+
+            release_folded_tag("sess-f", "domain:fold")
+
+            again = collect_tag_notes_for_injection(conn, ["domain:fold"], session_id="sess-f")
+            assert again == [{"tag": "domain:fold", "notes": "全文"}]
+        finally:
+            conn.close()
