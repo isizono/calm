@@ -576,7 +576,7 @@ def _emit_chunk_message(run_dir: Path, pending: dict) -> int:
     if missing:
         sys.stderr.write(
             f"片{no:04d}のDONEは受け付けていない（不足: {' / '.join(missing)}）。"
-            "searchで重複を確かめてから記録するか、SKIP行を書け。\n"
+            "記録するか、SKIP行を書け。\n"
         )
     sys.stderr.write(
         f"片{no:04d}を処理せよ。Read {chunk_path}。"

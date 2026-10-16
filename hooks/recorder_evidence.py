@@ -4,15 +4,16 @@
 最終メッセージだけから決める純粋関数群。見張り（hooks/recorder_watch.py）の
 DONE確定と、回帰ハーネス（scripts/recorder_harness.py）の検証の両方が使う。
 
-受け付ける形は次のどちらか。どちらでも、その片の中で成功したsearchが1回以上
-要る（重複を確かめずに書いた・飛ばした片を区別できなくなるため）。
+受け付ける形は次のどちらか。
 
 - 記録した: add_logs・add_materialのどれかが成功している
 - 飛ばした: 最終メッセージに次のどちらかのSKIP行がある
-  - `SKIP 重複 <種別>:<id>[,<種別>:<id>…] <理由>` 。種別とidの組は、その片で
-    成功したsearchの結果（`results[]`の`type`と`id_raw`）に現れたものに限る
-    （検索で見ていない重複先を書いて飛ばすのを防ぐ）
-  - `SKIP 該当なし <理由>` 。記録すべき出来事が無い片のため
+  - `SKIP 重複 <種別>:<id>[,<種別>:<id>…] <理由>` 。既にある記録と重なる片
+  - `SKIP 記録対象なし <理由>` 。記録すべき出来事が無い片
+
+searchは求めない。実測では、書込ゼロの片の大半はsearchせずにDONEしていたが、
+手で判定した範囲では取りこぼしが無く、searchを必須にしても費用が増えるだけ
+だったため。
 """
 from __future__ import annotations
 
@@ -27,13 +28,12 @@ SHARD_PROMPT_RE = re.compile(r"片(\d+)を処理せよ")
 NOOP_PROMPT_MARK = "片なし"
 DONE_RE = re.compile(r"\bDONE\s+(\d+)\b")
 
-_SEARCH_TOOLS = {"search"}
 _WRITE_TOOLS = {"add_logs", "add_material"}
 
 # 空白は行内に限る（`\s`だと改行を越えて次の行のDONEを理由と取り違える）。
 _SP = r"[ \t\u3000]"
 _SKIP_DUP_RE = re.compile(rf"^{_SP}*SKIP{_SP}+重複{_SP}+(\S+){_SP}+\S", re.MULTILINE)
-_SKIP_NONE_RE = re.compile(rf"^{_SP}*SKIP{_SP}+該当なし{_SP}+\S", re.MULTILINE)
+_SKIP_NONE_RE = re.compile(rf"^{_SP}*SKIP{_SP}+記録対象なし{_SP}+\S", re.MULTILINE)
 _DUP_TARGET_RE = re.compile(r"^(log|material|decision|topic|activity):(\d+)$")
 
 
@@ -95,50 +95,22 @@ def calm_calls(entries: list[TranscriptEntry]) -> list[CalmCall]:
     return calls
 
 
-def _search_hits(search_texts: list[str]) -> set[tuple[str, int]]:
-    """search応答の `results[]` から (種別, id) の組を集める。"""
-    hits: set[tuple[str, int]] = set()
-    for text in search_texts:
-        try:
-            results = json.loads(text).get("results") or []
-        except (json.JSONDecodeError, ValueError, AttributeError):
-            continue
-        for r in results:
-            if not isinstance(r, dict):
-                continue
-            rid = r.get("id_raw", r.get("id"))
-            if isinstance(r.get("type"), str) and isinstance(rid, int):
-                hits.add((r["type"], rid))
-    return hits
-
-
-def _skip_problem(last_msg: str, search_texts: list[str]) -> str | None:
+def _skip_problem(last_msg: str) -> str | None:
     """SKIP行が正しければNone、無い・不正なら理由を返す。"""
     if _SKIP_NONE_RE.search(last_msg):
         return None
     m = _SKIP_DUP_RE.search(last_msg)
     if m is None:
         return "記録(add_logs/add_material)もSKIP行も無い"
-    targets = [t for t in re.split(r"[,、]", m.group(1)) if t]
-    hits = _search_hits(search_texts)
-    for target in targets:
-        tm = _DUP_TARGET_RE.match(target)
-        if tm is None:
+    for target in (t for t in re.split(r"[,、]", m.group(1)) if t):
+        if not _DUP_TARGET_RE.match(target):
             return f"SKIP 重複の重複先 `{target}` が <種別>:<id> の形でない"
-        if (tm.group(1), int(tm.group(2))) not in hits:
-            return f"SKIP 重複の重複先 `{target}` がこの片のsearch結果に無い"
     return None
 
 
 def missing_evidence(entries: list[TranscriptEntry], last_msg: str) -> list[str]:
     """片の記録証跡で足りないものを返す。空ならDONEを受け付けてよい。"""
-    calls = calm_calls(entries)
-    searches = [c.result_text for c in calls if c.ok and c.short_name in _SEARCH_TOOLS]
-    missing = []
-    if not searches:
-        missing.append("成功したsearchが無い")
-    if not any(c.ok and c.short_name in _WRITE_TOOLS for c in calls):
-        problem = _skip_problem(last_msg, searches)
-        if problem:
-            missing.append(problem)
-    return missing
+    if any(c.ok and c.short_name in _WRITE_TOOLS for c in calm_calls(entries)):
+        return []
+    problem = _skip_problem(last_msg)
+    return [problem] if problem else []

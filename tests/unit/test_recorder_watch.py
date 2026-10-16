@@ -99,6 +99,14 @@ def _search_evidence(uuid: str) -> list[dict]:
     ]
 
 
+def _write_evidence(uuid: str) -> list[dict]:
+    """記録役が片の中でadd_logsに成功した、というtranscript行を返す。"""
+    return [
+        _entry("assistant", uuid, tool_calls=["mcp__plugin_calm_calm__add_logs"], tool_inputs=[{"items": []}]),
+        _tool_result(f"{uuid}-res", f"tu-{uuid}-0", json.dumps({"created": [{"log_id": 1}]})),
+    ]
+
+
 def _write_jsonl(path, entries: list[dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for e in entries:
@@ -982,7 +990,7 @@ class TestUnlinkedMaterials:
         _append_jsonl(own_transcript, _search_evidence("s2"))
         sleep3, now3 = _stub_sleep_confirm_dead()
         code3, _ = _run_hook(
-            cwd=run_dir, last_assistant_message="SKIP 該当なし 出来事が無い\nDONE 0002", sleep=sleep3, now=now3,
+            cwd=run_dir, last_assistant_message="SKIP 記録対象なし 出来事が無い\nDONE 0002", sleep=sleep3, now=now3,
             own_transcript_path=str(own_transcript),
         )
         assert code3 == 0  # main死亡確定・残りなし → 終了処理
@@ -1088,7 +1096,7 @@ class TestEvidenceGate:
                                  own_transcript_path=str(own))
         assert code == 2
         assert "片0001のDONEは受け付けていない" in stderr
-        assert "成功したsearchが無い" in stderr
+        assert "記録(add_logs/add_material)もSKIP行も無い" in stderr
         assert "片0001を処理せよ" in stderr
         cursor = _cursor(run_dir)
         assert cursor["pending"]["retries"] == 1
@@ -1107,14 +1115,14 @@ class TestEvidenceGate:
     def test_evidence_from_the_first_attempt_counts_on_resend(self, tmp_path, monkeypatch):
         """1回目で記録したがDONEを書き忘れた片は、再送後のDONEだけで確定する。"""
         run_dir, own = self._emit_first_chunk(tmp_path, monkeypatch)
-        _append_jsonl(own, _search_evidence("s1"))
+        _append_jsonl(own, _write_evidence("w1"))
 
         sleep, now = _stub_sleep_and_clock()
         _run_hook(cwd=run_dir, last_assistant_message="終わり", sleep=sleep, now=now, own_transcript_path=str(own))
         _append_jsonl(own, [_entry("assistant", "x", text="DONE 0001")])
 
         sleep2, now2 = _stub_sleep_and_clock()
-        _run_hook(cwd=run_dir, last_assistant_message="SKIP 該当なし 雑談だけ\nDONE 0001", sleep=sleep2, now=now2,
+        _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2,
                   own_transcript_path=str(own))
         cursor = _cursor(run_dir)
         assert cursor["pending"] is None
@@ -1126,15 +1134,15 @@ class TestEvidenceGate:
         monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
         run_dir, _ = _setup_run(tmp_path, transcript_lines=[_entry("assistant", "e1", text="hello world")])
         own = tmp_path / "recorder_own.jsonl"
-        _write_jsonl(own, _search_evidence("early"))
+        _write_jsonl(own, _write_evidence("early"))
         _mock_main_alive(monkeypatch)
         sleep, now = _stub_sleep_and_clock()
         _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own))
 
         sleep2, now2 = _stub_sleep_and_clock()
-        _, stderr = _run_hook(cwd=run_dir, last_assistant_message="SKIP 該当なし x\nDONE 0001", sleep=sleep2,
+        _, stderr = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2,
                               now=now2, own_transcript_path=str(own))
-        assert "成功したsearchが無い" in stderr
+        assert "記録(add_logs/add_material)もSKIP行も無い" in stderr
 
     def test_resend_to_a_restarted_recorder_moves_recipient_and_position(self, tmp_path, monkeypatch):
         run_dir, _ = self._emit_first_chunk(tmp_path, monkeypatch, session_id="rec-old")
@@ -1155,7 +1163,7 @@ class TestEvidenceGate:
 
         _append_jsonl(new_own, _search_evidence("s1"))
         sleep2, now2 = _stub_sleep_and_clock()
-        _run_hook(cwd=run_dir, last_assistant_message="SKIP 該当なし x\nDONE 0001", sleep=sleep2, now=now2,
+        _run_hook(cwd=run_dir, last_assistant_message="SKIP 記録対象なし x\nDONE 0001", sleep=sleep2, now=now2,
                   own_transcript_path=str(new_own), session_id="rec-new")
         assert _cursor(run_dir)["pending"] is None
 

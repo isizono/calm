@@ -94,25 +94,32 @@ def test_calm_call_in_noop_turn_fails(tmp_path):
 
 def test_done_number_mismatch_fails(tmp_path):
     lines = [_prompt(_BOOT), _say("READY"), _dispatch(3), *_call("s", "search", _HIT),
-             _say("SKIP 該当なし 雑談\nDONE 0002")]
+             _say("SKIP 記録対象なし 雑談\nDONE 0002")]
     result = _run(tmp_path, lines)
     assert result["failures"] == ["片0003: 最終メッセージのDONE番号が片番号と一致しない: [2]"]
 
 
-def test_shard_without_search_fails(tmp_path):
+def test_shard_without_search_passes_and_reports_zero_searches(tmp_path):
     lines = [_prompt(_BOOT), _say("READY"), _dispatch(1),
              *_call("w", "add_material", {"material_id": 3}), _say("DONE 0001")]
     result = _run(tmp_path, lines)
-    assert result["failures"] == ["片0001: 記録証跡が足りない: ['成功したsearchが無い']"]
+    assert result["ok"] is True, result["failures"]
+    assert result["shards"][0]["searches"] == 0
+
+
+def test_shard_without_record_or_skip_fails(tmp_path):
+    lines = [_prompt(_BOOT), _say("READY"), _dispatch(1), *_call("s", "search", _HIT), _say("DONE 0001")]
+    result = _run(tmp_path, lines)
+    assert result["failures"] == ["片0001: 記録証跡が足りない: ['記録(add_logs/add_material)もSKIP行も無い']"]
 
 
 def test_resent_shard_is_judged_across_both_turns(tmp_path):
-    """証跡不足で再送された片は、1回目のsearchと再送後のSKIP行を合わせて判定する。"""
+    """再送された片は、1回目の記録と再送後のDONEを合わせて判定する。"""
     lines = [
         _prompt(_BOOT), _say("READY"),
-        _dispatch(1), *_call("s", "search", _HIT), _say("DONE 0001"),
-        _dispatch(1, prefix="片0001のDONEは受け付けていない（不足: 記録もSKIP行も無い）。\n"),
-        _say("SKIP 該当なし 雑談だけ\nDONE 0001"),
+        _dispatch(1), *_call("w", "add_logs", {"created": [{"log_id": 1}]}), _say("記録した"),
+        _dispatch(1, prefix="片0001を処理せよ、の再送: "),
+        _say("DONE 0001"),
     ]
     result = _run(tmp_path, lines)
     assert result["ok"] is True, result["failures"]

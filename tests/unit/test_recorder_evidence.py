@@ -32,14 +32,14 @@ def _entries(*groups) -> list:
 _SEARCH_HIT = {"results": [{"type": "log", "id_raw": 120, "title": "同じ経緯"}]}
 
 
-def test_search_and_write_is_enough():
-    entries = _entries(_call("a", "search", _SEARCH_HIT), _call("b", "add_logs", {"created": [{"log_id": 1}]}))
+def test_write_is_enough_without_search():
+    entries = _entries(_call("b", "add_material", {"material_id": 3}))
     assert missing_evidence(entries, "DONE 0001") == []
 
 
-def test_write_without_search_is_rejected():
-    entries = _entries(_call("b", "add_material", {"material_id": 3}))
-    assert missing_evidence(entries, "DONE 0001") == ["成功したsearchが無い"]
+def test_search_and_write_is_enough():
+    entries = _entries(_call("a", "search", _SEARCH_HIT), _call("b", "add_logs", {"created": [{"log_id": 1}]}))
+    assert missing_evidence(entries, "DONE 0001") == []
 
 
 def test_search_only_without_write_or_skip_is_rejected():
@@ -47,68 +47,53 @@ def test_search_only_without_write_or_skip_is_rejected():
     assert missing_evidence(entries, "DONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
 
 
-def test_nothing_at_all_reports_both():
-    assert missing_evidence([], "DONE 0001") == [
-        "成功したsearchが無い",
-        "記録(add_logs/add_material)もSKIP行も無い",
-    ]
+def test_nothing_at_all_is_rejected():
+    assert missing_evidence([], "DONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
 
 
-def test_skip_none_with_search_is_accepted():
-    entries = _entries(_call("a", "search", {"results": []}))
-    assert missing_evidence(entries, "SKIP 該当なし 雑談だけ\nDONE 0001") == []
+def test_skip_none_without_search_is_accepted():
+    assert missing_evidence([], "SKIP 記録対象なし 雑談だけ\nDONE 0001") == []
 
 
 def test_skip_none_without_reason_is_rejected():
-    entries = _entries(_call("a", "search", {"results": []}))
-    assert missing_evidence(entries, "SKIP 該当なし\nDONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
+    assert missing_evidence([], "SKIP 記録対象なし\nDONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
 
 
-def test_skip_dup_naming_a_searched_id_is_accepted():
-    entries = _entries(_call("a", "search", _SEARCH_HIT))
-    assert missing_evidence(entries, "SKIP 重複 log:120 メインが記録済み\nDONE 0001") == []
+def test_skip_dup_is_accepted():
+    assert missing_evidence([], "SKIP 重複 log:120,material:45 メインが記録済み\nDONE 0001") == []
 
 
-def test_skip_dup_with_id_not_in_search_results_is_rejected():
-    entries = _entries(_call("a", "search", _SEARCH_HIT))
-    assert missing_evidence(entries, "SKIP 重複 log:12 メインが記録済み\nDONE 0001") == [
-        "SKIP 重複の重複先 `log:12` がこの片のsearch結果に無い"
-    ]
-
-
-def test_skip_dup_checks_every_target():
-    entries = _entries(_call("a", "search", _SEARCH_HIT))
-    assert missing_evidence(entries, "SKIP 重複 log:120,material:45 同じ\nDONE 0001") == [
-        "SKIP 重複の重複先 `material:45` がこの片のsearch結果に無い"
-    ]
+def test_skip_dup_without_reason_is_rejected():
+    assert missing_evidence([], "SKIP 重複 log:120\nDONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
 
 
 def test_skip_dup_with_malformed_target_is_rejected():
-    entries = _entries(_call("a", "search", _SEARCH_HIT))
-    assert missing_evidence(entries, "SKIP 重複 #120 同じ\nDONE 0001") == [
-        "SKIP 重複の重複先 `#120` が <種別>:<id> の形でない"
+    assert missing_evidence([], "SKIP 重複 log:120,#45 同じ\nDONE 0001") == [
+        "SKIP 重複の重複先 `#45` が <種別>:<id> の形でない"
     ]
 
 
-def test_failed_calls_do_not_count():
+def test_free_text_skip_reason_is_not_a_skip_line():
+    """決まった書式でない本文の理由は、機械で拾えないので証跡にならない。"""
+    assert missing_evidence([], "既に記録済みなのでスキップ\nDONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
+
+
+def test_failed_writes_do_not_count():
     entries = _entries(
-        _call("a", "search", {"error": {"code": "DATABASE_ERROR"}}),
+        _call("a", "add_logs", {"error": {"code": "VALIDATION_ERROR"}}),
         _call("b", "add_logs", "denied", is_error=True),
         _call("c", "add_material", None),  # 拒否されて結果が付かなかった
     )
-    assert missing_evidence(entries, "DONE 0001") == [
-        "成功したsearchが無い",
-        "記録(add_logs/add_material)もSKIP行も無い",
-    ]
+    assert missing_evidence(entries, "DONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
 
 
 def test_add_relation_alone_is_not_a_record():
-    entries = _entries(_call("a", "search", _SEARCH_HIT), _call("b", "add_relation", {"created": 1}))
+    entries = _entries(_call("b", "add_relation", {"created": 1}))
     assert missing_evidence(entries, "DONE 0001") == ["記録(add_logs/add_material)もSKIP行も無い"]
 
 
 def test_plugin_prefixed_tool_names_are_recognized():
-    entries = _entries(_call("a", "search", _SEARCH_HIT), _call("b", "add_logs", {"created": []}))
+    entries = _entries(_call("b", "add_logs", {"created": []}))
     for line in entries:
         for block in line.content:
             if block.get("type") == "tool_use":
@@ -123,14 +108,3 @@ def test_tool_use_written_twice_is_counted_once():
     search = _call("a", "search", _SEARCH_HIT)
     entries = _entries([search[0]], search)
     assert [c.short_name for c in calm_calls(entries)] == ["search"]
-
-
-def test_skip_dup_needs_matching_type_not_just_number():
-    """search結果の別の数字（件数など）や、種別違いの同じ番号では通らない。"""
-    entries = _entries(_call("a", "search", {"results": [{"type": "log", "id_raw": 120}], "total_count": 1}))
-    assert missing_evidence(entries, "SKIP 重複 log:1 同じ\nDONE 0001") == [
-        "SKIP 重複の重複先 `log:1` がこの片のsearch結果に無い"
-    ]
-    assert missing_evidence(entries, "SKIP 重複 material:120 同じ\nDONE 0001") == [
-        "SKIP 重複の重複先 `material:120` がこの片のsearch結果に無い"
-    ]
