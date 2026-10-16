@@ -742,12 +742,19 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
     own_transcript_path = hook_input.get("transcript_path")
     recipient_sid = hook_input.get("session_id")
 
-    if cursor.get("pending") is not None:
+    pending = cursor.get("pending")
+    if pending is not None and pending.get("recipient_sid") not in (None, recipient_sid):
+        # 立て直された新しい記録役は、この片をまだ受け取っていない。今の応答で
+        # 片を解決せず（再送の回数も使わず）、新しい送り先へ渡し直す。起動前
+        # ガードは送り先のsession_idで片の受領を判定し、証跡は送り先の
+        # transcriptで見る。
+        _set_recipient(pending, recipient_sid, own_transcript_path)
+        _write_json_atomic(cursor_path, cursor)
+        touch_marker(main_sid)
+        return _emit_chunk_message(run_dir, pending)
+
+    if pending is not None:
         outcome = _resolve_pending(cursor, last_msg)
-        if outcome == "retry" and cursor["pending"].get("recipient_sid") != recipient_sid:
-            # 立て直し後の新しい記録役へ再送する。起動前ガードは送り先の
-            # session_idで片の受領を判定し、証跡は送り先のtranscriptで見る。
-            _set_recipient(cursor["pending"], recipient_sid, own_transcript_path)
         if outcome == "done":
             cursor["chunks_since_restart"] = cursor.get("chunks_since_restart", 0) + 1
         _write_json_atomic(cursor_path, cursor)

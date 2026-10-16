@@ -9,8 +9,9 @@ DONE確定と、回帰ハーネス（scripts/recorder_harness.py）の検証の�
 
 - 記録した: add_logs・add_materialのどれかが成功している
 - 飛ばした: 最終メッセージに次のどちらかのSKIP行がある
-  - `SKIP 重複 <種別>:<id>[,<種別>:<id>…] <理由>` 。idはその片で成功した
-    searchの結果に現れたものに限る（存在しない重複先を書いて飛ばすのを防ぐ）
+  - `SKIP 重複 <種別>:<id>[,<種別>:<id>…] <理由>` 。種別とidの組は、その片で
+    成功したsearchの結果（`results[]`の`type`と`id_raw`）に現れたものに限る
+    （検索で見ていない重複先を書いて飛ばすのを防ぐ）
   - `SKIP 該当なし <理由>` 。記録すべき出来事が無い片のため
 """
 from __future__ import annotations
@@ -94,6 +95,23 @@ def calm_calls(entries: list[TranscriptEntry]) -> list[CalmCall]:
     return calls
 
 
+def _search_hits(search_texts: list[str]) -> set[tuple[str, int]]:
+    """search応答の `results[]` から (種別, id) の組を集める。"""
+    hits: set[tuple[str, int]] = set()
+    for text in search_texts:
+        try:
+            results = json.loads(text).get("results") or []
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            continue
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("id_raw", r.get("id"))
+            if isinstance(r.get("type"), str) and isinstance(rid, int):
+                hits.add((r["type"], rid))
+    return hits
+
+
 def _skip_problem(last_msg: str, search_texts: list[str]) -> str | None:
     """SKIP行が正しければNone、無い・不正なら理由を返す。"""
     if _SKIP_NONE_RE.search(last_msg):
@@ -102,12 +120,12 @@ def _skip_problem(last_msg: str, search_texts: list[str]) -> str | None:
     if m is None:
         return "記録(add_logs/add_material)もSKIP行も無い"
     targets = [t for t in re.split(r"[,、]", m.group(1)) if t]
-    joined = "\n".join(search_texts)
+    hits = _search_hits(search_texts)
     for target in targets:
         tm = _DUP_TARGET_RE.match(target)
         if tm is None:
             return f"SKIP 重複の重複先 `{target}` が <種別>:<id> の形でない"
-        if not re.search(rf"(?<!\d){tm.group(2)}(?!\d)", joined):
+        if (tm.group(1), int(tm.group(2))) not in hits:
             return f"SKIP 重複の重複先 `{target}` がこの片のsearch結果に無い"
     return None
 

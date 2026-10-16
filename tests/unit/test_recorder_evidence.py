@@ -123,3 +123,14 @@ def test_tool_use_written_twice_is_counted_once():
     search = _call("a", "search", _SEARCH_HIT)
     entries = _entries([search[0]], search)
     assert [c.short_name for c in calm_calls(entries)] == ["search"]
+
+
+def test_skip_dup_needs_matching_type_not_just_number():
+    """search結果の別の数字（件数など）や、種別違いの同じ番号では通らない。"""
+    entries = _entries(_call("a", "search", {"results": [{"type": "log", "id_raw": 120}], "total_count": 1}))
+    assert missing_evidence(entries, "SKIP 重複 log:1 同じ\nDONE 0001") == [
+        "SKIP 重複の重複先 `log:1` がこの片のsearch結果に無い"
+    ]
+    assert missing_evidence(entries, "SKIP 重複 material:120 同じ\nDONE 0001") == [
+        "SKIP 重複の重複先 `material:120` がこの片のsearch結果に無い"
+    ]

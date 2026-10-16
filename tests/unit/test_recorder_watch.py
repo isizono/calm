@@ -1146,7 +1146,9 @@ class TestEvidenceGate:
                                  own_transcript_path=str(new_own), session_id="rec-new")
         assert code == 2
         assert "片0001を処理せよ" in stderr
+        assert "受け付けていない" not in stderr
         pending = _cursor(run_dir)["pending"]
+        assert pending["retries"] == 0  # 新しい記録役は片を受け取っていないので再送の回数を使わない
         assert pending["recipient_sid"] == "rec-new"
         assert pending["transcript_path"] == str(new_own)
         assert pending["transcript_offset"] == new_own.stat().st_size
@@ -1156,3 +1158,23 @@ class TestEvidenceGate:
         _run_hook(cwd=run_dir, last_assistant_message="SKIP 該当なし x\nDONE 0001", sleep=sleep2, now=now2,
                   own_transcript_path=str(new_own), session_id="rec-new")
         assert _cursor(run_dir)["pending"] is None
+
+    def test_restart_after_a_resend_still_delivers_the_shard(self, tmp_path, monkeypatch):
+        """証跡不足で1回再送した後に記録役が立て直されても、片はunackedにならず
+        新しい記録役へ渡り直す。"""
+        run_dir, own = self._emit_first_chunk(tmp_path, monkeypatch, session_id="rec-old")
+        sleep, now = _stub_sleep_and_clock()
+        _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep, now=now,
+                  own_transcript_path=str(own), session_id="rec-old")
+        assert _cursor(run_dir)["pending"]["retries"] == 1
+
+        new_own = tmp_path / "recorder_new.jsonl"
+        _write_jsonl(new_own, [_entry("assistant", "r", text="READY")])
+        sleep2, now2 = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, last_assistant_message="READY", sleep=sleep2, now=now2,
+                                 own_transcript_path=str(new_own), session_id="rec-new")
+        assert code == 2
+        assert "片0001を処理せよ" in stderr
+        cursor = _cursor(run_dir)
+        assert cursor["unacked"] == []
+        assert cursor["pending"]["recipient_sid"] == "rec-new"
