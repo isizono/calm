@@ -31,6 +31,7 @@ tmux・flockに依存するためWindowsには移植しない。`main()`はWindo
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -406,7 +407,8 @@ def _load_cursor(path: Path) -> dict:
             data = {}
     else:
         data = {}
-    cursor = dict(_DEFAULT_CURSOR)
+    # 既定値のリスト（unacked等）を呼び出し間で共有しないよう深くコピーする。
+    cursor = copy.deepcopy(_DEFAULT_CURSOR)
     cursor.update(data)
     return cursor
 
@@ -642,11 +644,12 @@ def _read_int_env(name: str) -> int | None:
 # ===================================================================
 
 
-def _emit_new_chunk(
+def _cut_new_chunk(
     run_dir: Path, cursor: dict, cursor_path: Path,
     lines: list[_Line], cut_chunkable: list[_Line], cut_end_offset: int,
     own_transcript_path: str | None,
-) -> int:
+) -> None:
+    """片ファイルを書き、cursor["pending"]に載せてcursor.jsonへ保存する。"""
     no = cursor["next_no"]
     cursor["next_no"] = no + 1
 
@@ -681,14 +684,80 @@ def _emit_new_chunk(
 
     cursor["pending"] = pending
     _write_json_atomic(cursor_path, cursor)
-    return _emit_chunk_message(run_dir, cursor["pending"])
+
+
+def _poll_until_chunk(
+    run_dir: Path, cursor: dict, cursor_path: Path, run_data: dict,
+    own_transcript_path: str | None, *,
+    sleep, now, wait_limit: float | None, claude_pid: int | None,
+) -> str:
+    """メインのtranscriptを差分で読み、片を1つ切るまで待つ。
+
+    Returns:
+        "chunk"（cursor["pending"]に新しい片を載せた）/ "terminated"（メインの
+        死亡を確定し終了処理をした）/ "self_dead"（claude_pidが死んだ）/
+        "timeout"（wait_limit秒を超えた）。
+    """
+    main_sid = run_data["main_sid"]
+    main_pid = int(run_data["main_pid"])
+    main_pid_started_at = run_data["main_pid_started_at"]
+    main_transcript = Path(run_data["main_transcript"]).expanduser()
+
+    start = now()
+    dead_poll_count = 0
+
+    while True:
+        if claude_pid is not None and not is_process_alive(claude_pid):
+            return "self_dead"
+
+        if process_start_signature(main_pid) == main_pid_started_at:
+            dead_poll_count = 0
+        else:
+            dead_poll_count += 1
+        main_confirmed_dead = dead_poll_count >= MAIN_DEAD_CONFIRM_POLLS
+        touch_marker(main_sid)
+
+        lines, new_offset, lost, lost_uuid = _read_diff(
+            main_transcript, cursor["byte_offset"], cursor["last_uuid"]
+        )
+        if lost:
+            cursor["offset_lost"] = cursor.get("offset_lost", 0) + 1
+            cursor["byte_offset"] = new_offset
+            cursor["last_uuid"] = lost_uuid
+            _write_json_atomic(cursor_path, cursor)
+            lines = []
+
+        chunkable = [line for line in lines if _is_chunkable(line.entry)]
+        boundary_idx = _find_boundary_index(chunkable)
+
+        if boundary_idx is not None:
+            cut = chunkable[:boundary_idx]
+            _cut_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset, own_transcript_path)
+            return "chunk"
+
+        if _total_chars(chunkable) >= CHAR_THRESHOLD:
+            end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
+            _cut_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
+            return "chunk"
+
+        if main_confirmed_dead:
+            if chunkable:
+                end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
+                _cut_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
+                return "chunk"
+            _terminate(run_dir, main_sid)
+            return "terminated"
+
+        if wait_limit is not None and now() - start > wait_limit:
+            return "timeout"
+
+        sleep(POLL_INTERVAL_SECONDS)
 
 
 def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
     run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     main_sid = run_data["main_sid"]
     main_pid = int(run_data["main_pid"])
-    main_pid_started_at = run_data["main_pid_started_at"]
     main_transcript = Path(run_data["main_transcript"]).expanduser()
 
     cursor_path = run_dir / "cursor.json"
@@ -714,54 +783,16 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
     _ensure_activity_id_at_cursor(cursor, main_transcript, cursor_path)
 
-    claude_pid = _read_int_env("CLAUDE_PID")
-    start = now()
-    dead_poll_count = 0
-
-    while True:
-        if claude_pid is not None and not is_process_alive(claude_pid):
-            return 0
-
-        if process_start_signature(main_pid) == main_pid_started_at:
-            dead_poll_count = 0
-        else:
-            dead_poll_count += 1
-        main_confirmed_dead = dead_poll_count >= MAIN_DEAD_CONFIRM_POLLS
-        touch_marker(main_sid)
-
-        lines, new_offset, lost, lost_uuid = _read_diff(
-            main_transcript, cursor["byte_offset"], cursor["last_uuid"]
-        )
-        if lost:
-            cursor["offset_lost"] = cursor.get("offset_lost", 0) + 1
-            cursor["byte_offset"] = new_offset
-            cursor["last_uuid"] = lost_uuid
-            _write_json_atomic(cursor_path, cursor)
-            lines = []
-
-        chunkable = [line for line in lines if _is_chunkable(line.entry)]
-        boundary_idx = _find_boundary_index(chunkable)
-
-        if boundary_idx is not None:
-            cut = chunkable[:boundary_idx]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset, own_transcript_path)
-
-        if _total_chars(chunkable) >= CHAR_THRESHOLD:
-            end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
-
-        if main_confirmed_dead:
-            if chunkable:
-                end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-                return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
-            _terminate(run_dir, main_sid)
-            return 0
-
-        if now() - start > WAIT_LIMIT_SECONDS:
-            sys.stderr.write(_NOOP_MESSAGE + "\n")
-            return 2
-
-        sleep(POLL_INTERVAL_SECONDS)
+    outcome = _poll_until_chunk(
+        run_dir, cursor, cursor_path, run_data, own_transcript_path,
+        sleep=sleep, now=now, wait_limit=WAIT_LIMIT_SECONDS, claude_pid=_read_int_env("CLAUDE_PID"),
+    )
+    if outcome == "chunk":
+        return _emit_chunk_message(run_dir, cursor["pending"])
+    if outcome == "timeout":
+        sys.stderr.write(_NOOP_MESSAGE + "\n")
+        return 2
+    return 0
 
 
 def main(argv: list[str] | None = None, *, sleep=time.sleep, now=time.time) -> int:

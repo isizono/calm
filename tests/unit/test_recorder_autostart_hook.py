@@ -197,6 +197,22 @@ class TestSpawnsStart:
         assert "--from-start" not in cmd
         assert cmd[cmd.index("--transcript") + 1] == str(real_transcript)
 
+    def test_headless_value_adds_headless_flag(self, monkeypatch, calls):
+        """CALM_RECORDERは起動envから外すため、モードは引数で伝える。"""
+        monkeypatch.setenv("CALM_RECORDER", "headless")
+
+        _run_hook()
+
+        cmd, kwargs = _start_calls(calls)[0]
+        assert cmd[-1] == "--headless"
+        assert "CALM_RECORDER" not in kwargs["env"]
+
+    def test_resident_value_does_not_add_headless_flag(self, calls):
+        _run_hook()
+
+        cmd, _ = _start_calls(calls)[0]
+        assert "--headless" not in cmd
+
     def test_calm_recorder_is_stripped_from_spawned_env(self, calls):
         """spec 4: 記録役自身に記録役が付かないよう、起動env自体からは取り除く。"""
         _run_hook()
@@ -392,6 +408,14 @@ class TestReviveOnPrompt:
         assert cmd[cmd.index("--session-id") + 1] == _SID
         assert cmd[cmd.index("--pid") + 1] == str(_PID)
         assert _stop_calls(calls) == []
+
+    def test_headless_revive_keeps_headless_mode(self, calls, monkeypatch):
+        monkeypatch.setenv("CALM_RECORDER", "headless")
+
+        hook.revive_if_detached(self._payload())
+
+        cmd = _start_calls(calls)[0][0]
+        assert "--headless" in cmd
 
     def test_attached_recorder_is_left_alone(self, calls):
         from hooks.recorder_marker import write_marker

@@ -184,7 +184,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 | `hooks/hook_state.py`（`clear`サブコマンド） | SessionStart（`*`） | 前セッションの状態ファイルをクリア |
 | `hooks/session_start_hook.py` | SessionStart（`*`） | habits投影ファイルの鮮度検証+縮退フォールバック、アクティビティダッシュボード注入、鮮度警告 |
 | `hooks/sanitize_backfill_hook.py` | SessionStart（`*`） | 直近transcriptの差分backfill（生ID参照を`{{cite:...}}`へ変換） |
-| `hooks/recorder_autostart_hook.py` | SessionStart（`*`） | `CALM_RECORDER=1`のとき記録役セッションを自動で付ける |
+| `hooks/recorder_autostart_hook.py` | SessionStart（`*`） | `CALM_RECORDER=1`（常駐）か`CALM_RECORDER=headless`（片ごとに`claude -p`）のとき記録役を自動で付ける |
 | `hooks/user_prompt_submit_hook.py` | UserPromptSubmit（`*`） | 未消費nudge・ask通知の system-reminder 注入 |
 | `hooks/feedback_hook.py` | UserPromptSubmit・PreToolUse・PostToolUseFailure（いずれも`*`） | フィードバック機構（1ファイルで3イベントを処理） |
 | `hooks/stop_hook.py` | Stop（`*`） | transcript差分抽出→events.jsonl追記、check-in判定、nudge発火判定、heartbeat更新 |
@@ -202,6 +202,7 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `hooks/readable_id_format.py` / `hooks/signal_capture.py` / `hooks/citation_event_log.py` / `hooks/ask_notify_section.py`: 上記hookエントリポイントから共通利用されるヘルパーモジュール
 - `hooks/recorder_marker.py`: 記録役セッションの目印ファイル管理。記録役が付いているセッションではStop hookの記録催促を抑制する
 - `hooks/recorder_watch.py`: 記録役セッションの見張り（Stop hook、asyncRewake）。プラグイン共通の`hooks/hooks.json`には登録せず、記録役の実行ディレクトリにだけ動的生成されたsettings.json経由でサブプロセス起動される
+- `hooks/recorder_headless.py`: headlessモードの記録役。hookではなくtmuxペインで常駐するプロセスで、見張りと同じ方法で片を切り、片1件ごとに`claude -p`（組み込みツールなし、記録用のCALMツールだけ許可）を1回呼ぶ
 
 ### 4.2 skills/
 

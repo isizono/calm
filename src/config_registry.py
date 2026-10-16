@@ -123,7 +123,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("CALM_LEAK_GUARD", None, "offで内部ID漏出防止hookのブロックを止める", "emergency"),
     EnvVar("CALM_SANITIZE_DISABLE", None, "1でtool result・transcriptのsanitize hookを止める", "emergency"),
     # --- session ---
-    EnvVar("CALM_RECORDER", None, "記録担当セッションに立つ印。settings.jsonのenvに書くと全セッションが記録担当になる", "session"),
+    EnvVar("CALM_RECORDER", None, "対話セッションに記録役を自動で付ける。1で常駐モード、headlessで片1件ごとにclaude -pを1回呼ぶモード", "session"),
     # --- ci ---
     EnvVar("CALM_PR_BODY", None, "CIのlintがPR本文を受け取るための値", "ci"),
 )

@@ -827,3 +827,113 @@ class TestStartUsesSharedCwd:
         run_dir = watch_hook.run_dir_for("main-a")
         assert f"--settings {run_dir / 'settings.json'}" in pane_command
         assert f"--mcp-config {run_dir / 'mcp.json'}" in pane_command
+
+
+# ===================================================================
+# headlessモード
+# ===================================================================
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _registered_tool_names(main_py_path: Path) -> set[str]:
+    tree = ast.parse(main_py_path.read_text(encoding="utf-8"))
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(ast.unparse(d) == "mcp.tool()" for d in node.decorator_list)
+    }
+
+
+def _flag_values(cmd: list[str], flag: str) -> list[str]:
+    return cmd[cmd.index(flag) + 1].split(",")
+
+
+class TestHeadlessCommand:
+    def _cmd(self, tmp_path):
+        return svc.build_headless_command(_REPO_ROOT, tmp_path, "rec-sid")
+
+    def test_allowed_and_disallowed_partition_every_registered_tool(self, tmp_path):
+        cmd = self._cmd(tmp_path)
+        allowed = _flag_values(cmd, "--allowedTools")
+        disallowed = _flag_values(cmd, "--disallowedTools")
+
+        assert all(t.startswith(svc.MCP_TOOL_PREFIX) for t in allowed + disallowed)
+        allowed_short = {t.removeprefix(svc.MCP_TOOL_PREFIX) for t in allowed}
+        disallowed_short = {t.removeprefix(svc.MCP_TOOL_PREFIX) for t in disallowed}
+        assert allowed_short.isdisjoint(disallowed_short)
+        assert allowed_short | disallowed_short == _registered_tool_names(_MAIN_PY_PATH)
+        assert {"check_in", "add_decisions", "add_activity", "add_topic"} <= disallowed_short
+
+    def test_same_tools_as_resident_mode_are_allowed(self, tmp_path):
+        cmd = self._cmd(tmp_path)
+        resident_allow = {
+            rule for rule in svc.build_settings(_REPO_ROOT, tmp_path)["permissions"]["allow"]
+            if rule.startswith(svc.MCP_TOOL_PREFIX)
+        }
+        assert set(_flag_values(cmd, "--allowedTools")) == resident_allow
+
+    def test_builtin_tools_are_removed_and_run_is_isolated(self, tmp_path):
+        cmd = self._cmd(tmp_path)
+
+        assert cmd[:2] == ["claude", "-p"]
+        assert cmd[cmd.index("--tools") + 1] == ""
+        assert cmd[cmd.index("--session-id") + 1] == "rec-sid"
+        assert cmd[cmd.index("--mcp-config") + 1] == str(tmp_path / "mcp.json")
+        assert "--strict-mcp-config" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "project"
+        assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
+        assert cmd[cmd.index("--output-format") + 1] == "json"
+
+    def test_system_prompt_is_resident_guide_followed_by_headless_override(self, tmp_path):
+        cmd = self._cmd(tmp_path)
+        prompt = cmd[cmd.index("--append-system-prompt") + 1]
+        guide = (_REPO_ROOT / "hooks" / "recorder_instructions.md").read_text(encoding="utf-8").strip()
+        override = (_REPO_ROOT / "hooks" / "recorder_headless_instructions.md").read_text(encoding="utf-8").strip()
+        assert prompt == f"{guide}\n\n{override}"
+        assert svc.HEADLESS_CHUNK_MARKER in override
+
+
+@_posix_only_start
+class TestHeadlessStart:
+    def test_launches_runner_instead_of_resident_claude(self, calm_root, tmp_path, monkeypatch, _mock_subprocess):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _MAIN_SID)
+        monkeypatch.setenv("CLAUDE_PID", str(_MAIN_PID))
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [_entry("u1")])
+
+        result = svc.start(calm_root=calm_root, transcript=str(transcript), headless=True)
+
+        assert result["started"] is True
+        assert result["mode"] == "headless"
+        assert result["recorder_sid"] is None
+        run_dir = watch_hook.run_dir_for(_MAIN_SID)
+        assert not (run_dir / "settings.json").exists()
+        assert (run_dir / "mcp.json").exists()
+        assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["recorder_sids"] == []
+
+        pane_command = next(c for c in _mock_subprocess if c[1] == "new-session")[-1]
+        assert pane_command == svc.build_headless_runner_shell_command(calm_root, run_dir)
+        assert pane_command.startswith("exec ")
+        assert str(calm_root / "hooks" / "recorder_headless.py") in pane_command
+        assert json.loads(marker_path(_MAIN_SID).read_text(encoding="utf-8"))["pid"] == _PANE_PID
+
+    def test_append_recorder_sid_keeps_other_keys(self, tmp_path):
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "run.json").write_text(json.dumps({"main_sid": "m", "recorder_sids": ["a"]}), encoding="utf-8")
+
+        svc.append_recorder_sid(run_dir, "b")
+
+        assert json.loads((run_dir / "run.json").read_text(encoding="utf-8")) == {
+            "main_sid": "m", "recorder_sids": ["a", "b"],
+        }
+
+    def test_cli_headless_flag_reaches_start(self, monkeypatch, capsys):
+        seen = {}
+        monkeypatch.setattr(svc, "start", lambda **kw: seen.update(kw) or {"started": True})
+
+        svc.main(["start", "--headless"])
+
+        assert seen["headless"] is True
