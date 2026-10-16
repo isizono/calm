@@ -52,6 +52,7 @@ from hooks.hook_transcript import (
     _is_calm_tool,
     extract_last_activity_id,
 )
+from hooks.recorder_evidence import missing_evidence
 from hooks.recorder_marker import remove_marker, touch_marker
 from src.env_compat import env_get
 from src.harness import select_harness
@@ -522,11 +523,36 @@ def _advance_cursor_from_pending(cursor: dict, pending: dict) -> None:
         cursor.setdefault("unlinked_materials", []).extend(new_ids)
 
 
+def _evidence_missing(pending: dict, last_msg: str) -> list[str]:
+    """片を渡した後の記録役自身のtranscriptから、記録証跡の不足を返す。
+
+    transcriptの場所が分からない・無い・読めないときは判定できないので、不足なし
+    として通す。止めても1回の再送の後はunackedで進むだけで、記録は増えない。
+    """
+    path = pending.get("transcript_path")
+    if not path or not Path(path).exists():
+        return []
+    try:
+        lines, _ = _read_lines(Path(path), pending.get("transcript_offset", 0))
+    except OSError:
+        return []
+    return missing_evidence([line.entry for line in lines], last_msg)
+
+
 def _resolve_pending(cursor: dict, last_msg: str) -> str:
-    """cursor["pending"]を直接書き換えつつ、'done'|'retry'|'unacked'を返す。"""
+    """cursor["pending"]を直接書き換えつつ、'done'|'retry'|'unacked'を返す。
+
+    DONEがあっても記録証跡（hooks/recorder_evidence.py）が足りなければ
+    受け付けず、DONEが無いときと同じく1回だけ再送してからunackedにする。
+    """
     pending = cursor["pending"]
     done_numbers = _find_done_numbers(last_msg)
+    pending.pop("evidence_missing", None)
     if pending["no"] in done_numbers:
+        missing = _evidence_missing(pending, last_msg)
+        if missing:
+            pending["evidence_missing"] = missing
+    if pending["no"] in done_numbers and not pending.get("evidence_missing"):
         _advance_cursor_from_pending(cursor, pending)
         if pending.get("clears_unlinked_materials"):
             cursor["unlinked_materials"] = []
@@ -536,6 +562,8 @@ def _resolve_pending(cursor: dict, last_msg: str) -> str:
         pending["retries"] = 1
         return "retry"
     cursor.setdefault("unacked", []).append(pending["no"])
+    if pending.get("evidence_missing"):
+        cursor.setdefault("evidence_rejected", []).append(pending["no"])
     _advance_cursor_from_pending(cursor, pending)
     cursor["pending"] = None
     return "unacked"
@@ -544,6 +572,12 @@ def _resolve_pending(cursor: dict, last_msg: str) -> str:
 def _emit_chunk_message(run_dir: Path, pending: dict) -> int:
     no = pending["no"]
     chunk_path = run_dir / "chunks" / f"{no:04d}.md"
+    missing = pending.get("evidence_missing")
+    if missing:
+        sys.stderr.write(
+            f"片{no:04d}のDONEは受け付けていない（不足: {' / '.join(missing)}）。"
+            "記録するか、SKIP行を書け。\n"
+        )
     sys.stderr.write(
         f"片{no:04d}を処理せよ。Read {chunk_path}。"
         f"終えたら最終行に `DONE {no:04d}` と書いてターンを終えよ\n"
@@ -642,10 +676,19 @@ def _read_int_env(name: str) -> int | None:
 # ===================================================================
 
 
+def _set_recipient(pending: dict, recipient_sid: str | None, own_transcript_path: str | None) -> None:
+    """片の送り先と、記録証跡を読み始める送り先transcriptの位置を書く。"""
+    pending["recipient_sid"] = recipient_sid
+    if own_transcript_path:
+        own_path = Path(own_transcript_path)
+        pending["transcript_path"] = str(own_path)
+        pending["transcript_offset"] = own_path.stat().st_size if own_path.exists() else 0
+
+
 def _emit_new_chunk(
     run_dir: Path, cursor: dict, cursor_path: Path,
     lines: list[_Line], cut_chunkable: list[_Line], cut_end_offset: int,
-    own_transcript_path: str | None,
+    own_transcript_path: str | None, recipient_sid: str | None = None,
 ) -> int:
     no = cursor["next_no"]
     cursor["next_no"] = no + 1
@@ -672,6 +715,7 @@ def _emit_new_chunk(
         "end_activity_id": activity_id,
         "retries": 0,
     }
+    _set_recipient(pending, recipient_sid, own_transcript_path)
     if activity_id is None and own_transcript_path:
         own_path = Path(own_transcript_path)
         pending["own_transcript_path"] = str(own_path)
@@ -696,8 +740,20 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
     last_msg = hook_input.get("last_assistant_message") or ""
     own_transcript_path = hook_input.get("transcript_path")
+    recipient_sid = hook_input.get("session_id")
 
-    if cursor.get("pending") is not None:
+    pending = cursor.get("pending")
+    if pending is not None and pending.get("recipient_sid") not in (None, recipient_sid):
+        # 立て直された新しい記録役は、この片をまだ受け取っていない。今の応答で
+        # 片を解決せず（再送の回数も使わず）、新しい送り先へ渡し直す。起動前
+        # ガードは送り先のsession_idで片の受領を判定し、証跡は送り先の
+        # transcriptで見る。
+        _set_recipient(pending, recipient_sid, own_transcript_path)
+        _write_json_atomic(cursor_path, cursor)
+        touch_marker(main_sid)
+        return _emit_chunk_message(run_dir, pending)
+
+    if pending is not None:
         outcome = _resolve_pending(cursor, last_msg)
         if outcome == "done":
             cursor["chunks_since_restart"] = cursor.get("chunks_since_restart", 0) + 1
@@ -744,16 +800,16 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
         if boundary_idx is not None:
             cut = chunkable[:boundary_idx]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset, own_transcript_path)
+            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset, own_transcript_path, recipient_sid)
 
         if _total_chars(chunkable) >= CHAR_THRESHOLD:
             end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
+            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path, recipient_sid)
 
         if main_confirmed_dead:
             if chunkable:
                 end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-                return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
+                return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path, recipient_sid)
             _terminate(run_dir, main_sid)
             return 0
 
