@@ -47,6 +47,7 @@ class TestReadCliSession:
                 "cwd": "/Users/x/workspace",
                 "name": "workspace-a2",
                 "status": "busy",
+                "kind": "interactive",
             },
         )
         result = cli_session.read_cli_session(111)
@@ -56,6 +57,7 @@ class TestReadCliSession:
             "cli_session_id": "cli-uuid-1",
             "cwd": "/Users/x/workspace",
             "cli_status": "busy",
+            "cli_kind": "interactive",
         }
 
     def test_strips_whitespace_from_name(self, sessions_dir, monkeypatch):

@@ -48,12 +48,14 @@ def read_cli_session(pid: int) -> dict | None:
     cli_session_id = data.get("sessionId")
     cwd = data.get("cwd")
     cli_status = data.get("status")
+    cli_kind = data.get("kind")
     return {
         "cli_pid": pid,
         "name": name.strip(),
         "cli_session_id": cli_session_id if isinstance(cli_session_id, str) else None,
         "cwd": cwd if isinstance(cwd, str) else None,
         "cli_status": cli_status if isinstance(cli_status, str) else None,
+        "cli_kind": cli_kind if isinstance(cli_kind, str) else None,
     }
 
 

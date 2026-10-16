@@ -16,7 +16,7 @@ import pytest
 import hooks.recorder_autostart_hook as hook
 from hooks.hook_state import HookState
 from hooks.recorder_watch import run_dir_for
-from src.infra import process_signature
+from src.infra import cli_session, process_signature
 
 # main()はWindowsでは先頭のガードで即return 0になる(tmux前提のため未対応)。
 # TestGatingのうちWindows分岐を実際に検証するのは専用のテスト1本だけで、
@@ -37,21 +37,41 @@ _STARTED_AT = "Thu Jul 24 09:32:04 2026"
 
 
 class _FakeProcess:
-    def __init__(self, signature: str):
+    def __init__(self, signature: str, launch_env: dict):
         self._signature = signature
+        self._launch_env = launch_env
 
     def create_time(self):
         return self._signature
 
+    def environ(self):
+        return self._launch_env
+
 
 @pytest.fixture(autouse=True)
 def _isolate_state(tmp_path, monkeypatch):
+    """既定は端末のTUIで人が話している窓（ATTENDED=1・kind=interactive・起動時の環境にCHILD_SESSION無し）。"""
     monkeypatch.setattr(HookState, "BASE_DIR", tmp_path / "state")
     monkeypatch.setenv("CALM_RECORDER", "1")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
+    monkeypatch.delenv("CLAUDE_CODE_ENVIRONMENT_KIND", raising=False)
     monkeypatch.setenv("CLAUDE_PID", str(_PID))
 
-    monkeypatch.setattr(process_signature.psutil, "Process", lambda pid: _FakeProcess(_STARTED_AT))
+    sessions_dir = tmp_path / "cli_sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setenv(cli_session.CLAUDE_SESSIONS_DIR_ENV, str(sessions_dir))
+    _write_cli_session(sessions_dir, kind="interactive")
+    monkeypatch.setattr(cli_session, "is_process_alive", lambda pid: True)
+
+    launch_env: dict = {}
+    monkeypatch.setattr(process_signature.psutil, "Process", lambda pid: _FakeProcess(_STARTED_AT, launch_env))
+    return launch_env
+
+
+def _write_cli_session(sessions_dir, *, kind: str) -> None:
+    (sessions_dir / f"{_PID}.json").write_text(
+        json.dumps({"pid": _PID, "sessionId": _SID, "name": "workspace-a1", "kind": kind}), encoding="utf-8"
+    )
 
 
 @pytest.fixture
@@ -132,16 +152,45 @@ class TestGating:
         assert code == 0
         assert calls == []
 
-    def test_noop_when_unattended(self, monkeypatch, calls):
-        monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "0")
-        code = _run_hook()
-        assert code == 0
-        assert calls == []
+    @pytest.mark.parametrize(
+        ("attended", "environment_kind", "cli_kind", "launch_env", "expected"),
+        [
+            pytest.param("1", None, "interactive", {}, True, id="terminal-tui"),
+            pytest.param("0", "bridge", "interactive", {}, True, id="remote-control-window"),
+            pytest.param(None, "bridge", "interactive", {}, True, id="remote-control-window-attended-missing"),
+            pytest.param("0", None, "interactive", {}, False, id="claude-p"),
+            pytest.param(None, None, "interactive", {}, False, id="attended-and-bridge-missing"),
+            pytest.param("0", "bridge", "bg", {}, False, id="claude-bg"),
+            pytest.param("1", None, "interactive", {"CLAUDE_CODE_CHILD_SESSION": "1"}, False, id="pane-launched-by-claude"),
+            pytest.param("0", "bridge", "interactive", {"CLAUDE_CODE_CHILD_SESSION": "1"}, False, id="bridge-child"),
+            pytest.param("1", None, None, {}, False, id="session-file-missing"),
+        ],
+    )
+    def test_attaches_only_to_human_window(
+        self, monkeypatch, tmp_path, calls, _isolate_state, attended, environment_kind, cli_kind, launch_env, expected
+    ):
+        for name, value in (("CLAUDE_CODE_SESSION_ATTENDED", attended), ("CLAUDE_CODE_ENVIRONMENT_KIND", environment_kind)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        sessions_dir = tmp_path / "cli_sessions"
+        if cli_kind is None:
+            (sessions_dir / f"{_PID}.json").unlink()
+        else:
+            _write_cli_session(sessions_dir, kind=cli_kind)
+        _isolate_state.update(launch_env)
 
-    def test_noop_when_attended_flag_missing(self, monkeypatch, calls):
-        """claude -p / --bgはCLAUDE_CODE_SESSION_ATTENDED="0"を実機確認済みだが、
-        欠落時も安全側（何もしない）に倒す。"""
-        monkeypatch.delenv("CLAUDE_CODE_SESSION_ATTENDED", raising=False)
+        code = _run_hook()
+
+        assert code == 0
+        assert len(_start_calls(calls)) == (1 if expected else 0)
+
+    def test_noop_when_launch_env_unreadable(self, monkeypatch, calls):
+        def _denied(pid):
+            raise hook.psutil.AccessDenied(pid)
+
+        monkeypatch.setattr(hook.psutil, "Process", _denied)
         code = _run_hook()
         assert code == 0
         assert calls == []

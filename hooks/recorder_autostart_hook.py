@@ -2,9 +2,20 @@
 
 CALM_RECORDER環境変数が"1"（常駐モード）か"headless"（片1件ごとに
 `claude -p`を1回呼ぶモード）のときだけ動作する（未設定・他の値は何もしない）。
-対話セッションのみを対象とし、`claude -p`・`claude --bg`はCLAUDE_CODE_SESSION_
-ATTENDED（"1"のときだけ対話とみなす。欠落・"0"はどちらも何もしない側に倒す。
-実機確認: -p/--bgはいずれも"0"、対話セッションは"1"）で除外する。
+対象は人が直接話している窓だけで、`_is_human_window`が次の3つで見分ける
+（いずれも実機確認）。
+
+- 端末のTUI（CLAUDE_CODE_SESSION_ATTENDED="1"）か、Remote Control・デスクトップ
+  経由の窓（`--print --sdk-url`で動き、CLAUDE_CODE_ENVIRONMENT_KIND="bridge"）。
+  `claude -p`はATTENDEDが"0"でbridgeでもないので外れる。bridgeの窓のATTENDEDの
+  実値は確かめていないので、判定に使わない
+- `~/.claude/sessions/<CLAUDE_PID>.json`のkindが"interactive"。`claude --bg`は
+  "bg"で外れる（`claude -p`も"interactive"になるため、上の条件が要る）
+- claude本体の起動時の環境にCLAUDE_CODE_CHILD_SESSION="1"が無い。claudeは
+  子プロセス（Bash・hook）にこの値を渡すので、hook自身の環境では見分けられず、
+  本体プロセスの環境を読む。別のclaudeのBashから起こされたclaude（起動文で立つ
+  役のtmuxペイン・記録役自身）は、claudeが起動したtmuxサーバーの環境を通じて
+  これを受け継いでいる
 
 main_pid（$CLAUDE_PID。hookプロセスから見て、hookを起動したclaude自身の
 pidが入ることを実機確認済み）とsession_id（hook入力のsession_id）の組を
@@ -66,9 +77,12 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 try:
+    import psutil
+
     from hooks.hook_state import HookState
     from hooks.recorder_watch import _read_int_env, _spawn_detached_stop, run_dir_for
     from src.harness import select_harness
+    from src.infra.cli_session import read_cli_session
     from src.infra.process_signature import process_start_signature
 except Exception:
     # CALM_RECORDERを使っていない大多数のセッションのSessionStartを壊さない。
@@ -166,7 +180,24 @@ _HEADLESS_VALUE = "headless"
 
 
 def _wants_recorder() -> bool:
-    return os.environ.get("CALM_RECORDER") in ("1", _HEADLESS_VALUE) and os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "1"
+    return os.environ.get("CALM_RECORDER") in ("1", _HEADLESS_VALUE)
+
+
+def _is_human_window(main_pid: int) -> bool:
+    """人が直接話している窓か（判定の根拠はモジュールdocstring）。読めないときは付けない側に倒す。"""
+    if (
+        os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") != "1"
+        and os.environ.get("CLAUDE_CODE_ENVIRONMENT_KIND") != "bridge"
+    ):
+        return False
+    session = read_cli_session(main_pid)
+    if session is None or session.get("cli_kind") != "interactive":
+        return False
+    try:
+        launch_env = psutil.Process(main_pid).environ()
+    except psutil.Error:
+        return False
+    return launch_env.get("CLAUDE_CODE_CHILD_SESSION") != "1"
 
 
 def _start_for(payload: dict, *, stop_stale: bool) -> None:
@@ -183,7 +214,7 @@ def _start_for(payload: dict, *, stop_stale: bool) -> None:
         return
 
     main_pid = _read_int_env("CLAUDE_PID")
-    if main_pid is None:
+    if main_pid is None or not _is_human_window(main_pid):
         return
 
     if stop_stale:

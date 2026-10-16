@@ -466,7 +466,7 @@ def find_launcher_registration(session_id: str) -> dict | None:
 
 def resolve_cli_session(session_id: str) -> dict | None:
     """bridge session id から、その呼び出し元 Claude Code CLI プロセスの
-    表示情報（name / cli_session_id / cwd / cli_status）を解決する。
+    表示情報（name / cli_session_id / cwd / cli_status / cli_kind）を解決する。
 
     calm の HTTP server は全セッション共有かつ CLI から detach された
     プロセスであり、自身の祖先 pid には呼び出し元 CLI が現れない。そのため
