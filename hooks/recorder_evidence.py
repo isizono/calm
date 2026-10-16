@@ -64,6 +64,7 @@ def calm_calls(entries: list[TranscriptEntry]) -> list[CalmCall]:
     """CALMツールの呼び出しを、結果と突き合わせて呼び出し順に返す。
 
     結果が無い呼び出し（拒否されて結果が付かなかった等）はok=Falseにする。
+    同じidのtool_useは1回に数える。
     """
     order: list[str] = []
     names: dict[str, str] = {}
@@ -74,7 +75,8 @@ def calm_calls(entries: list[TranscriptEntry]) -> list[CalmCall]:
             if btype == "tool_use":
                 name = block.get("name", "")
                 use_id = block.get("id")
-                if use_id and _is_calm_tool(name):
+                # transcriptには同じtool_useが2回書かれることがあるのでidで畳む
+                if use_id and use_id not in names and _is_calm_tool(name):
                     order.append(use_id)
                     names[use_id] = _extract_short_name(name)
             elif btype == "tool_result":

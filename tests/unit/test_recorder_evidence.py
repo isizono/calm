@@ -114,3 +114,12 @@ def test_plugin_prefixed_tool_names_are_recognized():
             if block.get("type") == "tool_use":
                 block["name"] = block["name"].replace(_PREFIX, "mcp__plugin_calm_calm__")
     assert missing_evidence(entries, "DONE 0001") == []
+
+
+def test_tool_use_written_twice_is_counted_once():
+    """実transcriptでは同じtool_useが2行に書かれることがある。"""
+    from hooks.recorder_evidence import calm_calls
+
+    search = _call("a", "search", _SEARCH_HIT)
+    entries = _entries([search[0]], search)
+    assert [c.short_name for c in calm_calls(entries)] == ["search"]

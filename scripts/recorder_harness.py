@@ -18,11 +18,15 @@ headlessで片ごとにセッションが分かれる場合は、transcriptを�
 liveは、tmuxで本物の記録役（claude、sonnet）を起動し、mock CALM MCP
 （scripts/recorder_harness_mock_mcp.py）につないで3つの片を流してから
 checkする。本物のDBには書かない。claudeを実際に動かすので手動で回す。
+実行ディレクトリは終了後に作業ディレクトリ（出力のwork_dir）へ移す。記録役の
+transcriptは通常の記録役と同じ場所（~/.claude/projects配下）に残り、main_sidは
+`recorder-harness-` で始まる。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -207,6 +211,9 @@ def live(timeout: float) -> dict:
         if main_proc.poll() is None:
             main_proc.kill()
         svc.stop(session_id=main_sid)
+        # 本物の記録役の実行ディレクトリ群に混ざらないよう、作業ディレクトリへ移す
+        if run_dir is not None and run_dir.exists():
+            shutil.move(str(run_dir), str(work / "run_dir"))
 
 
 def main(argv: list[str] | None = None) -> int:
