@@ -109,6 +109,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("CALM_SESSION_REGISTRY_PATH", None, "セッション別名対応表のパス", "internal"),
     EnvVar("CALM_CLAUDE_SESSIONS_DIR", None, "Claude Codeのセッションディレクトリの場所", "internal"),
     EnvVar("CALM_ASK_NOTIFY_DIR", None, "ask通知ファイルの置き場", "internal"),
+    EnvVar("CALM_ASK_ORPHAN_GRACE_SEC", "3600", "回答済みaskを、回答後この秒数たっても受け手がいなければ「拾い手なし」として起動時一覧に出す", "internal"),
     EnvVar("CALM_HARNESS", None, "codexを指定するとCodexハーネス向けの入出力になる", "internal"),
     EnvVar("CALM_URL", None, "指定すると、launcherがローカルではなくこのリモートサーバーへ接続する", "internal"),
     EnvVar("CALM_REMOTE_PORT", "8001", "リモートサーバーのポート", "internal"),

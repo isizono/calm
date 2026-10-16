@@ -366,3 +366,80 @@ class TestNeighborAskLines:
 
     def test_no_check_in_state_returns_empty(self, temp_db, hook_state_dir):
         assert build_neighbor_ask_lines(self.SESSION) == ([], [])
+
+
+class TestOrphanedAsks:
+    """回答済み未triageのaskに、生きた受け手（質問者・止めている作業にcheck_in中のセッション）が残っているか。"""
+
+    GRACE = 600
+
+    def _answered(self, conn, act_ids, *, requester=None, kind="ask", age_sec=3600) -> int:
+        ask = ak.add_ask_with_conn(conn, f"q{act_ids}{requester}{kind}", act_ids, ["domain:test"], kind=kind,
+                                   session_id=requester)["id"]
+        ak.answer_ask_with_conn(conn, ask, "a")
+        conn.execute("UPDATE asks SET answered_at = datetime('now', ?) WHERE id = ?", (f"-{age_sec} seconds", ask))
+        conn.commit()
+        return ask
+
+    def _session(self, conn, sid, *, checked_in=None, ended=False) -> None:
+        conn.execute(
+            "INSERT INTO sessions (session_id, id_kind, last_checkin_activity_id, ended_at, ended_reason)"
+            " VALUES (?, 'bridge', ?, CASE WHEN ? THEN CURRENT_TIMESTAMP END, CASE WHEN ? THEN 'ttl' END)",
+            (sid, checked_in, ended, ended),
+        )
+        conn.commit()
+
+    def test_receivers_decide_orphan(self, temp_db):
+        live_work, closed_work = _act("live"), _act("closed")
+        conn = get_connection()
+        try:
+            self._session(conn, "dead-asker", ended=True)
+            self._session(conn, "live-asker")
+            self._session(conn, "worker", checked_in=live_work)
+            self._session(conn, "dead-worker", checked_in=closed_work, ended=True)
+
+            asker_alive = self._answered(conn, [closed_work], requester="live-asker")
+            worker_alive = self._answered(conn, [live_work], requester="dead-asker")
+            all_gone = self._answered(conn, [closed_work], requester="dead-asker")
+            blockless_meta = self._answered(conn, None, requester="dead-asker", kind="meta")
+            too_fresh = self._answered(conn, [closed_work], requester="dead-asker", kind="meta", age_sec=60)
+            update_activity(closed_work, status="completed")
+
+            assert ah.get_orphaned_ask_ids(conn, self.GRACE) == {all_gone, blockless_meta}
+            assert {asker_alive, worker_alive, too_fresh}.isdisjoint(ah.get_orphaned_ask_ids(conn, self.GRACE))
+        finally:
+            conn.close()
+
+    def test_triaged_or_open_asks_are_not_orphans(self, temp_db):
+        closed_work = _act("closed")
+        conn = get_connection()
+        try:
+            dismissed = self._answered(conn, [closed_work])
+            ak.triage_ask_with_conn(conn, dismissed, action="dismiss", dismiss_reason="不要")
+            conn.commit()
+            ak.add_ask_with_conn(conn, "still open", [closed_work], ["domain:test"])
+            conn.commit()
+
+            assert ah.get_orphaned_ask_ids(conn, self.GRACE) == set()
+        finally:
+            conn.close()
+
+    def test_moving_to_a_checked_in_work_adopts_the_ask(self, temp_db):
+        """拾う手順（受け皿の作業へmove_asks_toで付け替え）を踏むと拾い手なしでなくなる。"""
+        closed_work, inbox = _act("closed"), _act("inbox")
+        conn = get_connection()
+        try:
+            ask = self._answered(conn, [closed_work])
+            update_activity(closed_work, status="completed")
+            self._session(conn, "picker", checked_in=inbox)
+            assert ah.get_orphaned_ask_ids(conn, self.GRACE) == {ask}
+        finally:
+            conn.close()
+
+        assert "error" not in update_activity(closed_work, move_asks_to=inbox, move_ask_ids=[ask])
+
+        conn = get_connection()
+        try:
+            assert ah.get_orphaned_ask_ids(conn, self.GRACE) == set()
+        finally:
+            conn.close()
