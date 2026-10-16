@@ -1,6 +1,7 @@
 """SessionStart hook: CALM_RECORDER=1のとき、記録役を自動で付ける。
 
-CALM_RECORDER環境変数が"1"のときだけ動作する（未設定・他の値は何もしない）。
+CALM_RECORDER環境変数が"1"（常駐モード）か"headless"（片1件ごとに
+`claude -p`を1回呼ぶモード）のときだけ動作する（未設定・他の値は何もしない）。
 対話セッションのみを対象とし、`claude -p`・`claude --bg`はCLAUDE_CODE_SESSION_
 ATTENDED（"1"のときだけ対話とみなす。欠落・"0"はどちらも何もしない側に倒す。
 実機確認: -p/--bgはいずれも"0"、対話セッションは"1"）で除外する。
@@ -130,6 +131,8 @@ def _spawn_start(session_id: str, main_pid: int, transcript_path: str) -> None:
     ]
     if not Path(transcript_path).exists():
         cmd.append("--from-start")
+    if os.environ.get("CALM_RECORDER") == _HEADLESS_VALUE:
+        cmd.append("--headless")
 
     run_dir = run_dir_for(session_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -159,8 +162,11 @@ def main() -> int:
         return 0
 
 
+_HEADLESS_VALUE = "headless"
+
+
 def _wants_recorder() -> bool:
-    return os.environ.get("CALM_RECORDER") == "1" and os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "1"
+    return os.environ.get("CALM_RECORDER") in ("1", _HEADLESS_VALUE) and os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "1"
 
 
 def _start_for(payload: dict, *, stop_stale: bool) -> None:
