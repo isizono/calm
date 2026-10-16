@@ -203,6 +203,8 @@ Claude Code harnessのhookシグナルを受けてプロセスとして起動す
 - `hooks/recorder_marker.py`: 記録役セッションの目印ファイル管理。記録役が付いているセッションではStop hookの記録催促を抑制する
 - `hooks/recorder_watch.py`: 記録役セッションの見張り（Stop hook、asyncRewake）。プラグイン共通の`hooks/hooks.json`には登録せず、記録役の実行ディレクトリにだけ動的生成されたsettings.json経由でサブプロセス起動される
 - `hooks/recorder_headless.py`: headlessモードの記録役。hookではなくtmuxペインで常駐するプロセスで、見張りと同じ方法で片を切り、片1件ごとに`claude -p`（組み込みツールなし、記録用のCALMツールだけ許可）を1回呼ぶ
+- `hooks/recorder_guard_hook.py`: 記録役専用のPreToolUse hook。見張りと同じく記録役のsettings.jsonにだけ登録され、片を受け取る前（起動確認・片なしのターン）のツール呼び出しを拒否する
+- `hooks/recorder_evidence.py`: 記録役が片ごとに残すべき記録証跡（記録か、決まった書式のSKIP行）の判定。見張りは証跡の無いDONEを受け付けない。回帰ハーネス`scripts/recorder_harness.py`も同じ判定を使う
 
 ### 4.2 skills/
 

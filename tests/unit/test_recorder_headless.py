@@ -243,6 +243,37 @@ class TestResumeAndUnlinked:
         assert _cursor(run_dir)["unlinked_materials"] == [55]
 
 
+class TestEvidenceGate:
+    def test_rejected_done_is_resent_with_missing_evidence_note(self, tmp_path, world):
+        run_dir = _setup_run(tmp_path, [_entry("assistant", "e1", text="hello world")])
+        attempts = []
+
+        def _write_own_transcript(sid):
+            attempts.append(sid)
+            entries = [_entry("assistant", "r0", text="読んだ")]
+            if len(attempts) == 2:
+                entries += [
+                    _entry("assistant", "r1", tool="mcp__calm__add_logs", tool_id="w1", tool_input={"items": []}),
+                    _tool_result("r1r", "w1", json.dumps({"created": [{"log_id": 7}], "errors": []})),
+                ]
+            _write_jsonl(world.home / ".claude" / "projects" / "rec" / f"{sid}.jsonl", entries)
+
+        world.on_claude = _write_own_transcript
+        world.responses = [_ok("DONE 0001"), _ok("DONE 0001")]
+
+        headless.run(run_dir, sleep=world.sleep)
+
+        first, second = (c["input"] for c in world.claude_calls)
+        assert first.startswith("片0001を処理せよ")
+        note, rest = second.split("\n", 1)
+        assert note.startswith("片0001のDONEは受け付けていない（不足: ")
+        assert rest.startswith("片0001を処理せよ")
+        cursor = _cursor(run_dir)
+        assert cursor["unacked"] == []
+        assert cursor["pending"] is None
+        assert [r["outcome"] for r in _log(run_dir)] == ["retry", "done"]
+
+
 class TestMain:
     def test_missing_run_json_exits_1(self, tmp_path, world):
         assert headless.main([str(tmp_path / "nowhere")]) == 1

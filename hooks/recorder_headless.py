@@ -44,6 +44,7 @@ from hooks.recorder_watch import (  # noqa: E402
     _poll_until_chunk,
     _resolve_pending,
     _write_json_atomic,
+    evidence_rejection_note,
 )
 from src.services.recorder_launcher_service import (  # noqa: E402
     HEADLESS_PROMPT_TEMPLATE,
@@ -83,7 +84,8 @@ def _invoke(run_dir: Path, pending: dict) -> dict:
     sid = str(uuid.uuid4())
     append_recorder_sid(run_dir, sid)
     chunk = (run_dir / "chunks" / f"{no:04d}.md").read_text(encoding="utf-8")
-    prompt = HEADLESS_PROMPT_TEMPLATE.format(no=no) + chunk
+    # 記録証跡の不足で前回のDONEを弾いた再送では、何が足りないかを先頭に添える。
+    prompt = evidence_rejection_note(pending) + HEADLESS_PROMPT_TEMPLATE.format(no=no) + chunk
     env = {k: v for k, v in os.environ.items() if k not in _STRIPPED_ENV}
     base = {"session_id": sid, "launched": False, "text": "", "denials": [], "error": None, "cost_usd": None}
     try:

@@ -162,16 +162,25 @@ def resolve_main_transcript(
 def build_settings(calm_root: Path, run_dir: Path) -> dict:
     """記録役の実行ディレクトリに置くsettings.jsonの中身。
 
-    Stop hookを1本だけ登録する。asyncRewakeを使うhookは、ラッパー
-    （`uv run`等）を挟むとラッパー自身の失敗exitが「起床」と誤解釈されるため、
-    venvのpythonを直接execする。
+    Stop hookに見張り、PreToolUse hookに起動前ガードを登録する。
+    asyncRewakeを使うhookは、ラッパー（`uv run`等）を挟むとラッパー自身の
+    失敗exitが「起床」と誤解釈されるため、venvのpythonを直接execする。
     """
     venv_python = calm_root / ".venv" / "bin" / "python"
-    watch_script = calm_root / "hooks" / "recorder_watch.py"
-    # cwdは全セッション共通のフォルダなので、見張りにはrun_dirを引数で渡す。
-    watch_command = " ".join(shlex.quote(str(p)) for p in (venv_python, watch_script, run_dir))
+
+    # cwdは全セッション共通のフォルダなので、hookにはrun_dirを引数で渡す。
+    def hook_command(script: str) -> str:
+        return " ".join(shlex.quote(str(p)) for p in (venv_python, calm_root / "hooks" / script, run_dir))
+
+    watch_command = hook_command("recorder_watch.py")
     return {
         "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [{"type": "command", "command": hook_command("recorder_guard_hook.py")}],
+                }
+            ],
             "Stop": [
                 {
                     "matcher": "*",
