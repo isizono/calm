@@ -197,6 +197,31 @@ def get_asks_answered_since(
     return items
 
 
+def get_orphaned_ask_ids(conn: sqlite3.Connection, grace_sec: int) -> set[int]:
+    """回答済み未triageのaskのうち、回答から`grace_sec`秒以上たち、受け手が誰も生きていないもののid。
+
+    受け手は、質問したセッションと、askが止めている作業に最後にcheck_inしたセッション。
+    生死はセッション台帳（sessions.ended_at）で見る。止めている作業が全部閉じたaskや
+    blocksの無いメタaskは、質問したセッションが死ねばここに入る。
+    """
+    rows = conn.execute(
+        """
+        SELECT a.id
+          FROM asks a
+         WHERE a.status = 'answered' AND a.triage IS NULL
+           AND a.answered_at <= datetime('now', ?)
+           AND NOT EXISTS (
+               SELECT 1 FROM sessions s
+                WHERE s.ended_at IS NULL
+                  AND (s.session_id IN (SELECT requester_session_id FROM ask_requesters WHERE ask_id = a.id)
+                       OR s.last_checkin_activity_id IN (SELECT activity_id FROM ask_blocks WHERE ask_id = a.id))
+           )
+        """,
+        (f"-{int(grace_sec)} seconds",),
+    ).fetchall()
+    return {r["id"] for r in rows}
+
+
 def move_pending_asks_with_conn(
     conn: sqlite3.Connection,
     from_activity_id: int,

@@ -30,7 +30,12 @@ from src import config
 from src.db import get_connection, get_db_path
 from src.harness import select_harness
 from src.infra.plugin_install import resolve_installed_plugin_root
-from src.services import ask_service, habit_projection, session_registry_service
+from src.services import (
+    ask_handover_service,
+    ask_service,
+    habit_projection,
+    session_registry_service,
+)
 from src.services.activity_service import (
     get_active_activities_by_tag_with_conn,
     get_active_domains_with_conn,
@@ -793,6 +798,12 @@ def _fetch_asks_with_guaranteed_meta(conn, *, base_kwargs: dict, non_meta_limit:
 
 _OPEN_ASKS_META_CTA = "→ メタaskはrule-placement skillでの配置検討が必要"
 _OPEN_ASKS_GLOBAL_CTA = "→ ask-answer skillまたはget_asksで確認"
+_ORPHAN_MARK = " ［拾い手なし］"
+_ORPHAN_CTA = (
+    "→ ［拾い手なし］は質問した窓も止めている作業の担い手も残っていない。この窓で拾う: "
+    "受け皿の作業にcheck_in→update_activity(止めている作業, move_asks_to=受け皿, move_ask_ids=[id])"
+    "→捌いてtriage_ask"
+)
 
 
 def _section_text_len(lines: list[str]) -> int:
@@ -812,16 +823,19 @@ def _ask_blocks_suffix(ask: dict) -> str:
 
     題は最大2件まで並べ、超過分は件数で示す。
     """
+    mark = _ORPHAN_MARK if ask.get("orphaned") else ""
     titles = [b["title"] for b in ask.get("blocks") or [] if b.get("title")]
     if not titles:
-        return ""
+        return mark
     shown = "／".join(titles[:2])
     if len(titles) > 2:
         shown += f" 他{len(titles) - 2}件"
-    return f" ［止めている作業: {shown}］"
+    return f" ［止めている作業: {shown}］{mark}"
 
 
-def _render_open_asks_section(open_result: dict, pending_result: dict, budget_chars: int) -> str:
+def _render_open_asks_section(
+    open_result: dict, pending_result: dict, budget_chars: int, pending_cta: str | None = None
+) -> str:
     """open_result/pending_resultから、セクション全体のテキストを組み立てる。
 
     見出し（内容が1件以上あるバケットのみ）・meta行（バケットごとに全件、
@@ -878,6 +892,8 @@ def _render_open_asks_section(open_result: dict, pending_result: dict, budget_ch
             bucket_lines.append(f"- [meta] (#{a['id_raw']}) {a['question']}{_ask_blocks_suffix(a)}")
         if bucket["meta"]:
             bucket_lines.append(_OPEN_ASKS_META_CTA)
+        if pending_cta and bucket is pending_result:
+            bucket_lines.append(pending_cta)
         required_by_bucket.append(bucket_lines)
 
     all_required_lines = [line for bucket_lines in required_by_bucket for line in bucket_lines]
@@ -948,6 +964,10 @@ def _build_open_asks_section(conn, session_id: str | None = None, source: str | 
     優先して確保される）。open・回答済み未捌きの両バケットとも0件時は
     コンテキスト消費ゼロ（空文字を返す）。取得失敗時（ask_service側が
     {"error": ...}を返す場合）も非表示にフォールバックする。
+
+    回答済み未捌きのうち受け手が残っていないask（ask_handover_service.
+    get_orphaned_ask_ids）には「拾い手なし」の目印を付け、対面の窓にだけ
+    拾う手順の1行を必須要素として足す。
     """
     open_result = _fetch_asks_with_guaranteed_meta(
         conn, base_kwargs={"status": "open"}, non_meta_limit=_OPEN_ASKS_NON_META_DISPLAY_LIMIT
@@ -964,7 +984,23 @@ def _build_open_asks_section(conn, session_id: str | None = None, source: str | 
     if not (open_result["meta"] or open_result["non_meta"] or pending_result["meta"] or pending_result["non_meta"]):
         return ""
 
-    return _render_open_asks_section(open_result, pending_result, config.INJECTION_BUDGET_OPEN_ASKS_CHARS)
+    # 判定が失敗しても一覧そのものは出す（目印が付かないだけにする）
+    try:
+        orphan_ids = ask_handover_service.get_orphaned_ask_ids(conn, config.ASK_ORPHAN_GRACE_SEC)
+    except Exception as e:
+        try_capture_signal(kind="machine_error", source="hook:session_start", summary=f"orphaned asks: {e}"[:200])
+        orphan_ids = set()
+    for a in pending_result["meta"] + pending_result["non_meta"]:
+        a["orphaned"] = a["id_raw"] in orphan_ids
+    has_orphan = any(a["orphaned"] for a in pending_result["meta"] + pending_result["non_meta"])
+    # 目印は誰にでも付けるが、拾う手順は対面の窓（bg・無人実行でない）にだけ出す。
+    # 範囲の決まった仕事を持つbgに別のaskを拾わせないため。
+    attended = os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") != "0"
+    pending_cta = _ORPHAN_CTA if has_orphan and attended else None
+
+    return _render_open_asks_section(
+        open_result, pending_result, config.INJECTION_BUDGET_OPEN_ASKS_CHARS, pending_cta
+    )
 
 
 def _build_ask_notify_section(conn, session_id: str | None = None, source: str | None = None, **_kwargs) -> str:  # source, **_kwargs: 全セクション共通シグネチャ
