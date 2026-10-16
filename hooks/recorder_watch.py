@@ -31,6 +31,7 @@ tmux・flockに依存するためWindowsには移植しない。`main()`はWindo
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -52,6 +53,7 @@ from hooks.hook_transcript import (
     _is_calm_tool,
     extract_last_activity_id,
 )
+from hooks.recorder_evidence import missing_evidence
 from hooks.recorder_marker import remove_marker, touch_marker
 from src.env_compat import env_get
 from src.harness import select_harness
@@ -406,7 +408,8 @@ def _load_cursor(path: Path) -> dict:
             data = {}
     else:
         data = {}
-    cursor = dict(_DEFAULT_CURSOR)
+    # 既定値のリスト（unacked等）を呼び出し間で共有しないよう深くコピーする。
+    cursor = copy.deepcopy(_DEFAULT_CURSOR)
     cursor.update(data)
     return cursor
 
@@ -522,11 +525,36 @@ def _advance_cursor_from_pending(cursor: dict, pending: dict) -> None:
         cursor.setdefault("unlinked_materials", []).extend(new_ids)
 
 
+def _evidence_missing(pending: dict, last_msg: str) -> list[str]:
+    """片を渡した後の記録役自身のtranscriptから、記録証跡の不足を返す。
+
+    transcriptの場所が分からない・無い・読めないときは判定できないので、不足なし
+    として通す。止めても1回の再送の後はunackedで進むだけで、記録は増えない。
+    """
+    path = pending.get("transcript_path")
+    if not path or not Path(path).exists():
+        return []
+    try:
+        lines, _ = _read_lines(Path(path), pending.get("transcript_offset", 0))
+    except OSError:
+        return []
+    return missing_evidence([line.entry for line in lines], last_msg)
+
+
 def _resolve_pending(cursor: dict, last_msg: str) -> str:
-    """cursor["pending"]を直接書き換えつつ、'done'|'retry'|'unacked'を返す。"""
+    """cursor["pending"]を直接書き換えつつ、'done'|'retry'|'unacked'を返す。
+
+    DONEがあっても記録証跡（hooks/recorder_evidence.py）が足りなければ
+    受け付けず、DONEが無いときと同じく1回だけ再送してからunackedにする。
+    """
     pending = cursor["pending"]
     done_numbers = _find_done_numbers(last_msg)
+    pending.pop("evidence_missing", None)
     if pending["no"] in done_numbers:
+        missing = _evidence_missing(pending, last_msg)
+        if missing:
+            pending["evidence_missing"] = missing
+    if pending["no"] in done_numbers and not pending.get("evidence_missing"):
         _advance_cursor_from_pending(cursor, pending)
         if pending.get("clears_unlinked_materials"):
             cursor["unlinked_materials"] = []
@@ -536,14 +564,28 @@ def _resolve_pending(cursor: dict, last_msg: str) -> str:
         pending["retries"] = 1
         return "retry"
     cursor.setdefault("unacked", []).append(pending["no"])
+    if pending.get("evidence_missing"):
+        cursor.setdefault("evidence_rejected", []).append(pending["no"])
     _advance_cursor_from_pending(cursor, pending)
     cursor["pending"] = None
     return "unacked"
 
 
+def evidence_rejection_note(pending: dict) -> str:
+    """前回のDONEを記録証跡の不足で受け付けなかったときに、再送の先頭へ添える1行。無ければ空。"""
+    missing = pending.get("evidence_missing")
+    if not missing:
+        return ""
+    return (
+        f"片{pending['no']:04d}のDONEは受け付けていない（不足: {' / '.join(missing)}）。"
+        "記録するか、SKIP行を書け。\n"
+    )
+
+
 def _emit_chunk_message(run_dir: Path, pending: dict) -> int:
     no = pending["no"]
     chunk_path = run_dir / "chunks" / f"{no:04d}.md"
+    sys.stderr.write(evidence_rejection_note(pending))
     sys.stderr.write(
         f"片{no:04d}を処理せよ。Read {chunk_path}。"
         f"終えたら最終行に `DONE {no:04d}` と書いてターンを終えよ\n"
@@ -642,11 +684,21 @@ def _read_int_env(name: str) -> int | None:
 # ===================================================================
 
 
-def _emit_new_chunk(
+def _set_recipient(pending: dict, recipient_sid: str | None, own_transcript_path: str | None) -> None:
+    """片の送り先と、記録証跡を読み始める送り先transcriptの位置を書く。"""
+    pending["recipient_sid"] = recipient_sid
+    if own_transcript_path:
+        own_path = Path(own_transcript_path)
+        pending["transcript_path"] = str(own_path)
+        pending["transcript_offset"] = own_path.stat().st_size if own_path.exists() else 0
+
+
+def _cut_new_chunk(
     run_dir: Path, cursor: dict, cursor_path: Path,
     lines: list[_Line], cut_chunkable: list[_Line], cut_end_offset: int,
-    own_transcript_path: str | None,
-) -> int:
+    own_transcript_path: str | None, recipient_sid: str | None = None,
+) -> None:
+    """片ファイルを書き、cursor["pending"]に載せてcursor.jsonへ保存する。"""
     no = cursor["next_no"]
     cursor["next_no"] = no + 1
 
@@ -672,6 +724,7 @@ def _emit_new_chunk(
         "end_activity_id": activity_id,
         "retries": 0,
     }
+    _set_recipient(pending, recipient_sid, own_transcript_path)
     if activity_id is None and own_transcript_path:
         own_path = Path(own_transcript_path)
         pending["own_transcript_path"] = str(own_path)
@@ -681,46 +734,31 @@ def _emit_new_chunk(
 
     cursor["pending"] = pending
     _write_json_atomic(cursor_path, cursor)
-    return _emit_chunk_message(run_dir, cursor["pending"])
 
 
-def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
-    run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+def _poll_until_chunk(
+    run_dir: Path, cursor: dict, cursor_path: Path, run_data: dict,
+    own_transcript_path: str | None, recipient_sid: str | None = None, *,
+    sleep, now, wait_limit: float | None, claude_pid: int | None,
+) -> str:
+    """メインのtranscriptを差分で読み、片を1つ切るまで待つ。
+
+    Returns:
+        "chunk"（cursor["pending"]に新しい片を載せた）/ "terminated"（メインの
+        死亡を確定し終了処理をした）/ "self_dead"（claude_pidが死んだ）/
+        "timeout"（wait_limit秒を超えた）。
+    """
     main_sid = run_data["main_sid"]
     main_pid = int(run_data["main_pid"])
     main_pid_started_at = run_data["main_pid_started_at"]
     main_transcript = Path(run_data["main_transcript"]).expanduser()
 
-    cursor_path = run_dir / "cursor.json"
-    cursor = _load_cursor(cursor_path)
-
-    last_msg = hook_input.get("last_assistant_message") or ""
-    own_transcript_path = hook_input.get("transcript_path")
-
-    if cursor.get("pending") is not None:
-        outcome = _resolve_pending(cursor, last_msg)
-        if outcome == "done":
-            cursor["chunks_since_restart"] = cursor.get("chunks_since_restart", 0) + 1
-        _write_json_atomic(cursor_path, cursor)
-        if outcome == "retry":
-            touch_marker(main_sid)
-            return _emit_chunk_message(run_dir, cursor["pending"])
-        if outcome == "done" and cursor["chunks_since_restart"] >= CHUNKS_PER_RESTART:
-            cursor["chunks_since_restart"] = 0
-            cursor["restart_count"] = cursor.get("restart_count", 0) + 1
-            _write_json_atomic(cursor_path, cursor)
-            _spawn_detached_restart(_project_root, run_dir, main_sid, main_pid, main_transcript)
-            return 0
-
-    _ensure_activity_id_at_cursor(cursor, main_transcript, cursor_path)
-
-    claude_pid = _read_int_env("CLAUDE_PID")
     start = now()
     dead_poll_count = 0
 
     while True:
         if claude_pid is not None and not is_process_alive(claude_pid):
-            return 0
+            return "self_dead"
 
         if process_start_signature(main_pid) == main_pid_started_at:
             dead_poll_count = 0
@@ -744,24 +782,79 @@ def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
 
         if boundary_idx is not None:
             cut = chunkable[:boundary_idx]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset, own_transcript_path)
+            _cut_new_chunk(run_dir, cursor, cursor_path, lines, cut, cut[-1].end_offset, own_transcript_path, recipient_sid)
+            return "chunk"
 
         if _total_chars(chunkable) >= CHAR_THRESHOLD:
             end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-            return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
+            _cut_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path, recipient_sid)
+            return "chunk"
 
         if main_confirmed_dead:
             if chunkable:
                 end_offset = lines[-1].end_offset if lines else cursor["byte_offset"]
-                return _emit_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path)
+                _cut_new_chunk(run_dir, cursor, cursor_path, lines, chunkable, end_offset, own_transcript_path, recipient_sid)
+                return "chunk"
             _terminate(run_dir, main_sid)
-            return 0
+            return "terminated"
 
-        if now() - start > WAIT_LIMIT_SECONDS:
-            sys.stderr.write(_NOOP_MESSAGE + "\n")
-            return 2
+        if wait_limit is not None and now() - start > wait_limit:
+            return "timeout"
 
         sleep(POLL_INTERVAL_SECONDS)
+
+
+def _watch(run_dir: Path, hook_input: dict, *, sleep, now) -> int:
+    run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    main_sid = run_data["main_sid"]
+    main_pid = int(run_data["main_pid"])
+    main_transcript = Path(run_data["main_transcript"]).expanduser()
+
+    cursor_path = run_dir / "cursor.json"
+    cursor = _load_cursor(cursor_path)
+
+    last_msg = hook_input.get("last_assistant_message") or ""
+    own_transcript_path = hook_input.get("transcript_path")
+    recipient_sid = hook_input.get("session_id")
+
+    pending = cursor.get("pending")
+    if pending is not None and pending.get("recipient_sid") not in (None, recipient_sid):
+        # 立て直された新しい記録役は、この片をまだ受け取っていない。今の応答で
+        # 片を解決せず（再送の回数も使わず）、新しい送り先へ渡し直す。起動前
+        # ガードは送り先のsession_idで片の受領を判定し、証跡は送り先の
+        # transcriptで見る。
+        _set_recipient(pending, recipient_sid, own_transcript_path)
+        _write_json_atomic(cursor_path, cursor)
+        touch_marker(main_sid)
+        return _emit_chunk_message(run_dir, pending)
+
+    if pending is not None:
+        outcome = _resolve_pending(cursor, last_msg)
+        if outcome == "done":
+            cursor["chunks_since_restart"] = cursor.get("chunks_since_restart", 0) + 1
+        _write_json_atomic(cursor_path, cursor)
+        if outcome == "retry":
+            touch_marker(main_sid)
+            return _emit_chunk_message(run_dir, cursor["pending"])
+        if outcome == "done" and cursor["chunks_since_restart"] >= CHUNKS_PER_RESTART:
+            cursor["chunks_since_restart"] = 0
+            cursor["restart_count"] = cursor.get("restart_count", 0) + 1
+            _write_json_atomic(cursor_path, cursor)
+            _spawn_detached_restart(_project_root, run_dir, main_sid, main_pid, main_transcript)
+            return 0
+
+    _ensure_activity_id_at_cursor(cursor, main_transcript, cursor_path)
+
+    outcome = _poll_until_chunk(
+        run_dir, cursor, cursor_path, run_data, own_transcript_path, recipient_sid,
+        sleep=sleep, now=now, wait_limit=WAIT_LIMIT_SECONDS, claude_pid=_read_int_env("CLAUDE_PID"),
+    )
+    if outcome == "chunk":
+        return _emit_chunk_message(run_dir, cursor["pending"])
+    if outcome == "timeout":
+        sys.stderr.write(_NOOP_MESSAGE + "\n")
+        return 2
+    return 0
 
 
 def main(argv: list[str] | None = None, *, sleep=time.sleep, now=time.time) -> int:

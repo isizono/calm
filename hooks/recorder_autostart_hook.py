@@ -1,6 +1,7 @@
 """SessionStart hook: CALM_RECORDER=1のとき、記録役を自動で付ける。
 
-CALM_RECORDER環境変数が"1"のときだけ動作する（未設定・他の値は何もしない）。
+CALM_RECORDER環境変数が"1"（常駐モード）か"headless"（片1件ごとに
+`claude -p`を1回呼ぶモード）のときだけ動作する（未設定・他の値は何もしない）。
 対象は人が直接話している窓だけで、`_is_human_window`が次の3つで見分ける
 （いずれも実機確認）。
 
@@ -144,6 +145,8 @@ def _spawn_start(session_id: str, main_pid: int, transcript_path: str) -> None:
     ]
     if not Path(transcript_path).exists():
         cmd.append("--from-start")
+    if os.environ.get("CALM_RECORDER") == _HEADLESS_VALUE:
+        cmd.append("--headless")
 
     run_dir = run_dir_for(session_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -173,8 +176,11 @@ def main() -> int:
         return 0
 
 
+_HEADLESS_VALUE = "headless"
+
+
 def _wants_recorder() -> bool:
-    return os.environ.get("CALM_RECORDER") == "1"
+    return os.environ.get("CALM_RECORDER") in ("1", _HEADLESS_VALUE)
 
 
 def _is_human_window(main_pid: int) -> bool:

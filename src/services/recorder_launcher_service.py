@@ -13,6 +13,7 @@ CALMのMCPツール（add_*/update_*/check_in等）はここでは一切呼ば�
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import shlex
@@ -48,11 +49,8 @@ RECORDER_CWD_NAME = "_cwd"
 # ユーザーの信頼確認の記録先。テストではmonkeypatchでtmpに向ける。
 CLAUDE_CONFIG_PATH = Path.home() / ".claude.json"
 
-# ponytail: --mcp-config での直接起動時にClaude Codeが組み立てるMCPツール名の
-# 接頭辞は実機未確認。プラグイン経由は "mcp__plugin_calm_calm__"、リモートMCP
-# 経由は "mcp__claude_ai_calm__" と判明しているが（hooks/hook_transcript.py）、
-# どちらとも接続経路が異なるため、この値が実際と一致するかは初回起動で確かめる
-# 必要がある。ずれていた場合はここだけ直せばよい。
+# --mcp-config で直接起動したときのMCPツール名の接頭辞（mcp.jsonのサーバー名
+# "calm" に由来）。プラグイン経由の "mcp__plugin_calm_calm__" とは異なる。
 MCP_TOOL_PREFIX = "mcp__calm__"
 
 # read系ツール制限は「check_inのみ除外、search/get_*/get_mapは許可」に決着済み
@@ -70,6 +68,34 @@ _ALLOWED_GET_TOOLS = (
 )
 
 INITIAL_PROMPT = "起動確認。片が届くまで何もせず `READY` とだけ返してターンを終えよ"
+
+# headlessモードの1回の呼び出しで、片ファイルの中身の前に置く文言。
+HEADLESS_CHUNK_MARKER = "===== 片ここから ====="
+HEADLESS_PROMPT_TEMPLATE = (
+    "片{no:04d}を処理せよ。片（ヘッダーと本文）は `" + HEADLESS_CHUNK_MARKER + "` の行より下にある。"
+    "終えたら最終行に `DONE {no:04d}` と書いてターンを終えよ\n\n" + HEADLESS_CHUNK_MARKER + "\n\n"
+)
+
+
+def allowed_tool_names() -> list[str]:
+    """記録役に許すCALMツールの短い名前（接頭辞なし）。常駐・headless共通。"""
+    return ["search", *_ALLOWED_GET_TOOLS, "add_logs", "add_material", "add_relation"]
+
+
+def registered_tool_names(calm_root: Path) -> set[str]:
+    """src/main.pyで`@mcp.tool()`登録されている関数名を返す。
+
+    # ponytail: 動いているMCPサーバーがcalm_rootと別版のコードで、ツールが
+    # 増えていると、増えた分は拒否一覧から漏れる（dontAskで呼べば拒否され、
+    # permission_denialsに出る）。サーバーからtools/listを引く形にすれば塞がる。
+    """
+    tree = ast.parse((calm_root / "src" / "main.py").read_text(encoding="utf-8"))
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(ast.unparse(d) == "mcp.tool()" for d in node.decorator_list)
+    }
 
 
 class RecorderLaunchError(Exception):
@@ -136,16 +162,25 @@ def resolve_main_transcript(
 def build_settings(calm_root: Path, run_dir: Path) -> dict:
     """記録役の実行ディレクトリに置くsettings.jsonの中身。
 
-    Stop hookを1本だけ登録する。asyncRewakeを使うhookは、ラッパー
-    （`uv run`等）を挟むとラッパー自身の失敗exitが「起床」と誤解釈されるため、
-    venvのpythonを直接execする。
+    Stop hookに見張り、PreToolUse hookに起動前ガードを登録する。
+    asyncRewakeを使うhookは、ラッパー（`uv run`等）を挟むとラッパー自身の
+    失敗exitが「起床」と誤解釈されるため、venvのpythonを直接execする。
     """
     venv_python = calm_root / ".venv" / "bin" / "python"
-    watch_script = calm_root / "hooks" / "recorder_watch.py"
-    # cwdは全セッション共通のフォルダなので、見張りにはrun_dirを引数で渡す。
-    watch_command = " ".join(shlex.quote(str(p)) for p in (venv_python, watch_script, run_dir))
+
+    # cwdは全セッション共通のフォルダなので、hookにはrun_dirを引数で渡す。
+    def hook_command(script: str) -> str:
+        return " ".join(shlex.quote(str(p)) for p in (venv_python, calm_root / "hooks" / script, run_dir))
+
+    watch_command = hook_command("recorder_watch.py")
     return {
         "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [{"type": "command", "command": hook_command("recorder_guard_hook.py")}],
+                }
+            ],
             "Stop": [
                 {
                     "matcher": "*",
@@ -162,11 +197,7 @@ def build_settings(calm_root: Path, run_dir: Path) -> dict:
         },
         "permissions": {
             "allow": [
-                f"{MCP_TOOL_PREFIX}search",
-                *(f"{MCP_TOOL_PREFIX}{name}" for name in _ALLOWED_GET_TOOLS),
-                f"{MCP_TOOL_PREFIX}add_logs",
-                f"{MCP_TOOL_PREFIX}add_material",
-                f"{MCP_TOOL_PREFIX}add_relation",
+                *(f"{MCP_TOOL_PREFIX}{name}" for name in allowed_tool_names()),
                 # 権限ルールのパスは "/..." だと設定ファイルからの相対、"//..." で
                 # 絶対パスになる。run_dirは記録役のcwdの外にあるため絶対で指す。
                 f"Read(/{run_dir}/**)",
@@ -236,11 +267,13 @@ def update_run_json(
     main_pid: int,
     main_pid_started_at: str,
     main_transcript: Path,
-    recorder_sid: str,
+    recorder_sid: str | None,
 ) -> dict:
     """run.jsonを書く。既存の`recorder_sids`があれば追記する（上書きしない）。
 
     前の記録役のtranscriptをトークン集計で引けなくなることを避けるため。
+    recorder_sidがNone（headlessモードの起動時）は追記しない。headlessでは
+    片ごとの呼び出しのたびに`append_recorder_sid`で足す。
     """
     path = run_dir / "run.json"
     if path.exists():
@@ -251,7 +284,8 @@ def update_run_json(
     else:
         existing = {}
     recorder_sids = list(existing.get("recorder_sids") or [])
-    recorder_sids.append(recorder_sid)
+    if recorder_sid is not None:
+        recorder_sids.append(recorder_sid)
     data = {
         "main_sid": main_sid,
         "main_pid": main_pid,
@@ -261,6 +295,14 @@ def update_run_json(
     }
     _write_json_atomic(path, data, indent=2)
     return data
+
+
+def append_recorder_sid(run_dir: Path, recorder_sid: str) -> None:
+    """run.jsonの`recorder_sids`に1件足す。ほかのキーは触らない。"""
+    path = run_dir / "run.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["recorder_sids"] = [*(data.get("recorder_sids") or []), recorder_sid]
+    _write_json_atomic(path, data, indent=2)
 
 
 def ensure_cursor(run_dir: Path, main_transcript: Path, *, from_start: bool) -> None:
@@ -307,10 +349,55 @@ def build_recorder_shell_command(calm_root: Path, run_dir: Path, recorder_sid: s
     return " ".join(shlex.quote(part) for part in parts)
 
 
-def _launch_tmux_session(
-    session_name: str, cwd: Path, run_dir: Path, calm_root: Path, recorder_sid: str
-) -> None:
-    pane_command = build_recorder_shell_command(calm_root, run_dir, recorder_sid)
+def build_headless_runner_shell_command(calm_root: Path, run_dir: Path) -> str:
+    """headlessモードでtmuxペインに置く、片を待って呼び出しを回すプロセスのコマンド。
+
+    常駐モードと同じく`exec`で置き換え、pane_pidがこのプロセスを指すようにする。
+    """
+    parts = [
+        "exec", str(calm_root / ".venv" / "bin" / "python"),
+        str(calm_root / "hooks" / "recorder_headless.py"), str(run_dir),
+    ]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def headless_system_prompt(calm_root: Path) -> str:
+    """常駐モードの記録役ガイドの後ろに、headless用の読み替えをつなげる。"""
+    hooks_dir = calm_root / "hooks"
+    return "\n\n".join(
+        (hooks_dir / name).read_text(encoding="utf-8").strip()
+        for name in ("recorder_instructions.md", "recorder_headless_instructions.md")
+    )
+
+
+def build_headless_command(calm_root: Path, run_dir: Path, recorder_sid: str) -> list[str]:
+    """片1件を処理するclaude -pの引数列。片の本文はstdinで渡す。
+
+    `--tools ""`で組み込みツールを全部外し、CALMツールは許可するものだけを
+    残して他を`--disallowedTools`で一覧から消す。`--allowedTools`だけでは
+    許可外のツールも一覧に載ったまま呼べてしまい（dontAskで拒否されるだけ）、
+    毎回の前置きのトークンも倍になる。
+    """
+    allowed = allowed_tool_names()
+    disallowed = sorted(registered_tool_names(calm_root) - set(allowed))
+    return [
+        "claude", "-p",
+        "--session-id", recorder_sid,
+        "--setting-sources", "project",
+        "--strict-mcp-config",
+        "--mcp-config", str(run_dir / "mcp.json"),
+        "--append-system-prompt", headless_system_prompt(calm_root),
+        "--tools", "",
+        "--allowedTools", ",".join(f"{MCP_TOOL_PREFIX}{n}" for n in allowed),
+        "--disallowedTools", ",".join(f"{MCP_TOOL_PREFIX}{n}" for n in disallowed),
+        "--permission-mode", "dontAsk",
+        "--permission-prompts", "none",
+        "--model", "sonnet",
+        "--output-format", "json",
+    ]
+
+
+def _launch_tmux_session(session_name: str, cwd: Path, pane_command: str) -> None:
     try:
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_name, "-c", str(cwd), pane_command],
@@ -346,9 +433,16 @@ def start(
     pid: int | None = None,
     transcript: str | None = None,
     from_start: bool = False,
+    headless: bool = False,
     projects_root: Path | None = None,
     sid_factory=lambda: str(uuid.uuid4()),
 ) -> dict[str, Any]:
+    """記録役を起動する。
+
+    headless=Trueでは常駐のclaudeを立てず、tmuxペインで
+    hooks/recorder_headless.pyを動かす。片ごとの呼び出しのsession_idは
+    呼び出しのたびにrun.jsonへ足すため、起動時には追記しない。
+    """
     if sys.platform == "win32":
         # tmuxに依存するためWindowsには未対応。
         return {"started": False, "reason": "windows unsupported"}
@@ -369,17 +463,23 @@ def start(
     run_dir = run_dir_for(main_sid)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    write_settings_json(run_dir, calm_root)
     write_mcp_json(run_dir, calm_root)
     ensure_cursor(run_dir, main_transcript, from_start=from_start)
 
     cwd = recorder_cwd()
     cwd.mkdir(parents=True, exist_ok=True)
-    ensure_trusted(cwd)
 
-    recorder_sid = sid_factory()
+    if headless:
+        # claude -pは信頼確認を出さないため、ensure_trustedは要らない。
+        recorder_sid = None
+        pane_command = build_headless_runner_shell_command(calm_root, run_dir)
+    else:
+        write_settings_json(run_dir, calm_root)
+        ensure_trusted(cwd)
+        recorder_sid = sid_factory()
+        pane_command = build_recorder_shell_command(calm_root, run_dir, recorder_sid)
     session_name = tmux_session_name(main_sid)
-    _launch_tmux_session(session_name, cwd, run_dir, calm_root, recorder_sid)
+    _launch_tmux_session(session_name, cwd, pane_command)
     try:
         pane_pid = _pane_pid(session_name)
         write_marker(main_sid, pane_pid)
@@ -403,6 +503,7 @@ def start(
 
     return {
         "started": True,
+        "mode": "headless" if headless else "resident",
         "main_sid": main_sid,
         "run_dir": str(run_dir),
         "recorder_sid": recorder_sid,
@@ -484,6 +585,10 @@ def main(argv: list[str] | None = None) -> None:
         "--from-start", action="store_true",
         help="transcriptの先頭から読み始める(既定は起動時点の末尾から)",
     )
+    p_start.add_argument(
+        "--headless", action="store_true",
+        help="常駐セッションを立てず、片1件ごとにclaude -pを1回呼ぶモードで起動する",
+    )
 
     p_stop = sub.add_parser("stop", help="記録役を停止する")
     p_stop.add_argument("--session-id", help="既定: $CLAUDE_CODE_SESSION_ID")
@@ -509,6 +614,7 @@ def main(argv: list[str] | None = None) -> None:
                 pid=args.pid,
                 transcript=args.transcript,
                 from_start=args.from_start,
+                headless=args.headless,
             )
         elif args.command == "stop":
             result = stop(session_id=args.session_id)
