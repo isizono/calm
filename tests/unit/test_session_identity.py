@@ -601,6 +601,7 @@ class TestResolveCliSession:
             "cli_session_id": "cli-uuid-1",
             "cwd": None,
             "cli_status": None,
+            "cli_kind": None,
         }
 
     def test_returns_none_when_no_registration_matches(
