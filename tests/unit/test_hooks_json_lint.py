@@ -259,3 +259,53 @@ def test_script_module_imports_succeed_under_declared_cwd(script_path: Path):
         f"{relative_path} のトップレベル import が cwd={_PROJECT_ROOT} で失敗した:\n"
         f"{result.stderr}"
     )
+
+
+class TestCodexLaunchContract:
+    """Codexが.codex配下の登録を起動するときの前提を固定する。"""
+
+    def test_hooks_run_via_wrapper_from_plugin_root(self):
+        """cwd基準の解決（git rev-parse）に戻らず、全コマンドがラッパー経由であること。"""
+        data = json.loads(_CODEX_HOOKS_JSON_PATH.read_text(encoding="utf-8"))
+        commands = [
+            h["command"]
+            for blocks in data["hooks"].values()
+            for block in blocks
+            for h in block["hooks"]
+        ]
+        assert commands
+        for command in commands:
+            assert "git rev-parse" not in command
+            assert command.startswith('sh "${CLAUDE_PLUGIN_ROOT}/hooks/codex_run.sh" hooks/')
+
+    @pytest.mark.parametrize(
+        "script,expects_message",
+        [
+            ("hooks/user_prompt_submit_hook.py", True),
+            ("hooks/session_start_hook.py", True),
+            ("hooks/preblock_hook.py", False),
+        ],
+    )
+    def test_wrapper_passes_through_without_uv(self, tmp_path, script, expects_message):
+        """uvが無いとき、発話をブロックせず(exit 0)、案内はJSONのsystemMessageで出す。"""
+        result = subprocess.run(
+            ["/bin/sh", str(_HOOKS_DIR / "codex_run.sh"), script],
+            env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0
+        if expects_message:
+            assert "uv" in json.loads(result.stdout)["systemMessage"]
+        else:
+            assert result.stdout == ""
+
+    def test_mcp_declaration_has_no_unexpanded_placeholder(self):
+        """CodexはプラグインのMCP宣言のargs内の${...}を展開しない。相対cwdはプラグインルートに解決される。"""
+        data = json.loads((_PROJECT_ROOT / ".codex" / "mcp.json").read_text(encoding="utf-8"))
+        server = data["calm"]
+        assert not any("${" in a for a in server["args"])
+        assert server["cwd"] == "."
+        manifest = json.loads((_PROJECT_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        assert manifest["mcpServers"] == "./.codex/mcp.json"
