@@ -7,7 +7,7 @@ from typing import Literal
 
 import yaml
 
-from src.db import get_connection, row_to_dict
+from src.db import get_connection, inserted_row_id, row_to_dict
 from src.services.citations_service import (
     apply_raw_to_cite_conversion,
     upsert_citations_for_owner_with_conn,
@@ -92,7 +92,7 @@ def _add_material_with_conn(
         "VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))",
         (title, content, source),
     )
-    material_id = cursor.lastrowid
+    material_id = inserted_row_id(cursor)
 
     # タグをリンク
     tag_ids = ensure_tag_ids(conn, parsed_tags)
@@ -344,11 +344,12 @@ def update_material(
         }
 
     # タグのバリデーション（tags指定時のみ）
-    parsed_tags = None
+    parsed_tags: list[tuple[str, str]] | None = None
     if tags is not None:
-        parsed_tags = validate_and_parse_tags(tags, required=True)
-        if isinstance(parsed_tags, dict):
-            return parsed_tags
+        parsed = validate_and_parse_tags(tags, required=True)
+        if isinstance(parsed, dict):
+            return parsed
+        parsed_tags = parsed
 
     if title is not None and not title.strip():
         return {
