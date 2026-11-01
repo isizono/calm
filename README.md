@@ -43,7 +43,9 @@ claude plugin install calm
 1. Claude Codeで`/mcp`を実行し、calmサーバーがconnected状態であることを確認します
 2. `/calm:man`を実行し、使い方の案内が返ってくることを確認します（名前衝突がなければ`/man`でも呼び出せますが、確実に通るのは`/calm:man`です）
 
-初回起動時はembeddingモデル（約290MB）をダウンロードするため時間がかかります。これはネットワーク接続が必要な一度きりの処理で、2回目以降はキャッシュされるため高速になります。
+初回起動時は依存パッケージの取得（`uv sync`。torch等を含み`.venv`は約860MB）とembeddingモデル（約290MB）のダウンロードのため時間がかかります。これはネットワーク接続が必要な一度きりの処理で、2回目以降はキャッシュされるため高速になります。
+
+依存の取得がClaude CodeのMCP接続待ち（30秒）を超えると、初回の`/mcp`がconnectedにならないことがあります。その場合は、プラグインのディレクトリ（`~/.claude/plugins/cache/calm-marketplace/calm/<版>/`）で`uv sync --frozen`を一度実行してから、`/mcp`で再接続してください。
 
 ### Windows 11での利用
 

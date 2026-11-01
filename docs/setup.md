@@ -13,11 +13,12 @@ CALMは`$HOME`配下にいくつかのファイルを生成し、hookを全イ�
 | データベース | `~/.claude/.claude-code-memory/discussion.db` | トピック・決定事項・ログ・アクティビティ等 |
 | スナップショット | `~/.claude/.claude-code-memory/snapshots/` | 既定12時間毎・最大5世代の定期バックアップ |
 | 振る舞い（habits）投影 | `~/.claude/rules/cc-memory-habits.md` | habits DBから自動生成。**手編集は次回同期で上書きされて失われます** |
+| サーバーログ | `~/.claude/.claude-code-memory/logs/` | `server.log`（通常ログ）と`server.stderr.log`（起動直後の致命的失敗用。起動のたびに上書き）。`CALM_DB_PATH`を変えている場合はそのDBと同じ階層の`logs/` |
 | hook発火ログ・状態ファイル | `~/.cc-memory/`, `~/.cache/cc-memory/` | 内部IDブロック時のログ、embeddingサーバーのログ、セッション別名対応表、ask通知ファイル等 |
 
 **hooksの登録内容とコスト**
 
-SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加え、PreToolUse・PostToolUseは`matcher: "*"`で登録されており、**ツール呼び出し1回ごとに`uv run python`で新規プロセスが起動します**。初回の`uv run`は依存関係の解決・インストールが走るため重く、2回目以降はvenvがキャッシュされるため起動コストは小さくなります。PreToolUseの内部IDリーク防止hookは、cwd上方の`pyproject.toml`の`[project].name`がCALM自身のプロジェクト名と一致する場合のみ実際にブロック判定を行うため、通常のユーザープロジェクトでは判定自体は常にno-opで通過します（プロセス起動自体は発生します）。
+SessionStart(4スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加え、PreToolUse・PostToolUse・PostToolUseFailureは`matcher: "*"`で登録されており、**ツール呼び出し1回ごとに`uv run python`で新規プロセスが起動します**。初回の`uv run`は依存関係の解決・インストールが走るため重く、2回目以降はvenvがキャッシュされるため起動コストは小さくなります。PreToolUseの内部IDリーク防止hookは、cwd上方の`pyproject.toml`の`[project].name`がCALM自身のプロジェクト名と一致する場合のみ実際にブロック判定を行うため、通常のユーザープロジェクトでは判定自体は常にno-opで通過します（プロセス起動自体は発生します）。
 
 **無効化スイッチ**
 
@@ -37,7 +38,7 @@ SessionStart(3スクリプト)・Stop・UserPromptSubmit・MessageDisplayに加�
 | `CALM_HEARTBEAT_TIMEOUT` | `20` | ホットアクティビティ判定の閾値（分） |
 | `CALM_GOAL_RECHECK_HOURS` | `6` | goalの担い手human/external条件で要確認フラグを立てるまでの経過時間（時間） |
 | `CALM_TIER2_MAX_AGE_DAYS` | `7` | SessionStart一覧の階層2にin_progressアクティビティを載せるupdated_at上限（日） |
-| `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は10500字で、総予算12000字との差は1500字） |
+| `CALM_TIER2_MAX_ITEMS` | `5` | SessionStart一覧の『優先』に出す件数の上限。hookが読むため`~/.claude/settings.json`の`env`で設定する。増やすときは`CALM_INJECTION_BUDGET_ACTIVITIES`も上げる（各セクションの予算の合計が`CALM_TOTAL_INJECTION_BUDGET_CHARS`を超えるとcomposeがValueErrorを出す。既定の合計は11100字で、総予算12000字との差は900字） |
 | `CALM_PIN_SURFACE_DECAY_DAYS` | `60` | pinnedアクティビティが階層2表示を維持できるupdated_at上限（日） |
 | `CALM_RECENCY_DECAY_RATE` | `0.0119` | 検索の時間減衰率 |
 | `CALM_PRECEDENT_BUDGET_CHARS` | `24000` | `pull_precedents`が本文展開（decision＋reason）に使う文字数予算 |
