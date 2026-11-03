@@ -130,7 +130,7 @@ def _summary_from_description(description: str | None) -> str:
 async def _fetch_tools() -> list:
     from src.main import mcp
 
-    return await mcp.list_tools()
+    return list(await mcp.list_tools())
 
 
 def build_openapi_doc() -> dict:
