@@ -228,6 +228,19 @@ class TestBuildSettings:
         assert "uv run" not in hook_cmd["command"]
 
     @_posix_only_start
+    def test_pre_tool_use_guard_gets_run_dir_for_every_tool(self, calm_root, tmp_path):
+        run_dir = tmp_path / "run"
+        settings = svc.build_settings(calm_root, run_dir)
+
+        (block,) = settings["hooks"]["PreToolUse"]
+        assert block["matcher"] == "*"
+        (hook_cmd,) = block["hooks"]
+        assert hook_cmd == {
+            "type": "command",
+            "command": f"{calm_root}/.venv/bin/python {calm_root}/hooks/recorder_guard_hook.py {run_dir}",
+        }
+
+    @_posix_only_start
     def test_permissions_allow_scoped_read_to_run_dir(self, calm_root, tmp_path):
         run_dir = tmp_path / "run"
         settings = svc.build_settings(calm_root, run_dir)

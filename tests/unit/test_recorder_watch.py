@@ -88,6 +88,25 @@ def _tool_result(uuid: str, tool_use_id: str, content_text: str) -> dict:
     return {"type": "user", "uuid": uuid, "message": {"content": content}}
 
 
+def _search_evidence(uuid: str) -> list[dict]:
+    """記録役が片の中で成功したsearchを1回呼んだ、というtranscript行を返す。
+
+    DONEは記録証跡（成功したsearch＋記録かSKIP行）が揃わないと受け付けられない。
+    """
+    return [
+        _entry("assistant", uuid, tool_calls=["mcp__plugin_calm_calm__search"], tool_inputs=[{"keyword": "k"}]),
+        _tool_result(f"{uuid}-res", f"tu-{uuid}-0", json.dumps({"results": []})),
+    ]
+
+
+def _write_evidence(uuid: str) -> list[dict]:
+    """記録役が片の中でadd_logsに成功した、というtranscript行を返す。"""
+    return [
+        _entry("assistant", uuid, tool_calls=["mcp__plugin_calm_calm__add_logs"], tool_inputs=[{"items": []}]),
+        _tool_result(f"{uuid}-res", f"tu-{uuid}-0", json.dumps({"created": [{"log_id": 1}]})),
+    ]
+
+
 def _write_jsonl(path, entries: list[dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for e in entries:
@@ -152,10 +171,10 @@ def _stub_sleep_confirm_dead(*extra_side_effects, start: float = 1000.0):
 
 def _run_hook(
     *, cwd, last_assistant_message: str = "", sleep=None, now=None, argv=None,
-    own_transcript_path: str = "/irrelevant.jsonl",
+    own_transcript_path: str = "/irrelevant.jsonl", session_id: str = "recorder-sess",
 ) -> tuple[int, str]:
     payload = {
-        "session_id": "recorder-sess",
+        "session_id": session_id,
         "cwd": str(cwd),
         "transcript_path": own_transcript_path,
         "last_assistant_message": last_assistant_message,
@@ -828,6 +847,7 @@ class TestUnlinkedMaterials:
         # 記録役が片の処理中に、relatedありのadd_material(除外対象)と
         # relatedなしのadd_material(収集対象)を1件ずつ呼んだとする。
         _append_jsonl(own_transcript, [
+            *_search_evidence("s1"),
             _entry(
                 "assistant", "r1",
                 tool_calls=["mcp__plugin_calm_calm__add_material"],
@@ -867,6 +887,7 @@ class TestUnlinkedMaterials:
         assert code == 2
 
         _append_jsonl(own_transcript, [
+            *_search_evidence("s1"),
             _entry(
                 "assistant", "r1",
                 tool_calls=["mcp__plugin_calm_calm__add_material"],
@@ -912,6 +933,7 @@ class TestUnlinkedMaterials:
         assert "own_transcript_path" not in pending  # activity確定済みなので追跡しない
 
         _append_jsonl(own_transcript, [
+            *_search_evidence("s1"),
             _entry(
                 "assistant", "r1",
                 tool_calls=["mcp__plugin_calm_calm__add_material"],
@@ -941,6 +963,7 @@ class TestUnlinkedMaterials:
         assert code == 2  # e1のみの片(activity未設定)
 
         _append_jsonl(own_transcript, [
+            *_search_evidence("s1"),
             _entry(
                 "assistant", "r1",
                 tool_calls=["mcp__plugin_calm_calm__add_material"],
@@ -964,9 +987,10 @@ class TestUnlinkedMaterials:
         header_line = next(line for line in chunk2.splitlines() if "未紐づけの記録" in line)
         assert "55" in header_line
 
+        _append_jsonl(own_transcript, _search_evidence("s2"))
         sleep3, now3 = _stub_sleep_confirm_dead()
         code3, _ = _run_hook(
-            cwd=run_dir, last_assistant_message="DONE 0002", sleep=sleep3, now=now3,
+            cwd=run_dir, last_assistant_message="SKIP 記録対象なし 出来事が無い\nDONE 0002", sleep=sleep3, now=now3,
             own_transcript_path=str(own_transcript),
         )
         assert code3 == 0  # main死亡確定・残りなし → 終了処理
@@ -986,6 +1010,7 @@ class TestUnlinkedMaterials:
         assert code == 2
 
         _append_jsonl(own_transcript, [
+            *_search_evidence("s1"),
             _entry(
                 "assistant", "r1",
                 tool_calls=["mcp__plugin_calm_calm__add_material"],
@@ -1039,3 +1064,125 @@ class TestUnlinkedMaterials:
         chunk = (run_dir / "chunks" / "0001.md").read_text(encoding="utf-8")
         assert "activity_id: 7" in chunk  # activity確定済みであることの確認
         assert "未紐づけの記録" not in chunk
+
+
+class TestEvidenceGate:
+    """DONEは、片を渡した後の記録役自身のtranscriptに記録証跡が無ければ
+    受け付けられず、不足を添えて1回だけ再送され、その次はunackedになる。"""
+
+    def _emit_first_chunk(self, tmp_path, monkeypatch, *, session_id="recorder-sess"):
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, _ = _setup_run(tmp_path, transcript_lines=[_entry("assistant", "e1", text="hello world")])
+        own = tmp_path / "recorder_own.jsonl"
+        _write_jsonl(own, [_entry("user", "boot", text="起動確認")])
+        _mock_main_alive(monkeypatch)
+        sleep, now = _stub_sleep_and_clock()
+        code, _ = _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own), session_id=session_id)
+        assert code == 2
+        return run_dir, own
+
+    def test_pending_records_recipient_and_transcript_position(self, tmp_path, monkeypatch):
+        run_dir, own = self._emit_first_chunk(tmp_path, monkeypatch)
+        pending = _cursor(run_dir)["pending"]
+        assert pending["recipient_sid"] == "recorder-sess"
+        assert pending["transcript_path"] == str(own)
+        assert pending["transcript_offset"] == own.stat().st_size
+
+    def test_done_without_evidence_is_resent_with_shortage_then_unacked(self, tmp_path, monkeypatch):
+        run_dir, own = self._emit_first_chunk(tmp_path, monkeypatch)
+
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep, now=now,
+                                 own_transcript_path=str(own))
+        assert code == 2
+        assert "片0001のDONEは受け付けていない" in stderr
+        assert "記録(add_logs/add_material)もSKIP行も無い" in stderr
+        assert "片0001を処理せよ" in stderr
+        cursor = _cursor(run_dir)
+        assert cursor["pending"]["retries"] == 1
+        assert cursor["last_uuid"] is None
+
+        _mock_main_dead(monkeypatch)
+        sleep2, now2 = _stub_sleep_confirm_dead()
+        code2, _ = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2,
+                             own_transcript_path=str(own))
+        assert code2 == 0
+        cursor2 = _cursor(run_dir)
+        assert cursor2["pending"] is None
+        assert cursor2["unacked"] == [1]
+        assert cursor2["evidence_rejected"] == [1]
+
+    def test_evidence_from_the_first_attempt_counts_on_resend(self, tmp_path, monkeypatch):
+        """1回目で記録したがDONEを書き忘れた片は、再送後のDONEだけで確定する。"""
+        run_dir, own = self._emit_first_chunk(tmp_path, monkeypatch)
+        _append_jsonl(own, _write_evidence("w1"))
+
+        sleep, now = _stub_sleep_and_clock()
+        _run_hook(cwd=run_dir, last_assistant_message="終わり", sleep=sleep, now=now, own_transcript_path=str(own))
+        _append_jsonl(own, [_entry("assistant", "x", text="DONE 0001")])
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2, now=now2,
+                  own_transcript_path=str(own))
+        cursor = _cursor(run_dir)
+        assert cursor["pending"] is None
+        assert cursor["last_uuid"] == "e1"
+        assert cursor.get("evidence_rejected", []) == []
+
+    def test_calls_before_dispatch_are_not_evidence(self, tmp_path, monkeypatch):
+        """片を渡す前（起動確認のターン等）の呼び出しは、その片の証跡に数えない。"""
+        monkeypatch.setattr(hook, "CHAR_THRESHOLD", 3)
+        run_dir, _ = _setup_run(tmp_path, transcript_lines=[_entry("assistant", "e1", text="hello world")])
+        own = tmp_path / "recorder_own.jsonl"
+        _write_jsonl(own, _write_evidence("early"))
+        _mock_main_alive(monkeypatch)
+        sleep, now = _stub_sleep_and_clock()
+        _run_hook(cwd=run_dir, sleep=sleep, now=now, own_transcript_path=str(own))
+
+        sleep2, now2 = _stub_sleep_and_clock()
+        _, stderr = _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep2,
+                              now=now2, own_transcript_path=str(own))
+        assert "記録(add_logs/add_material)もSKIP行も無い" in stderr
+
+    def test_resend_to_a_restarted_recorder_moves_recipient_and_position(self, tmp_path, monkeypatch):
+        run_dir, _ = self._emit_first_chunk(tmp_path, monkeypatch, session_id="rec-old")
+        new_own = tmp_path / "recorder_new.jsonl"
+        _write_jsonl(new_own, [_entry("user", "boot2", text="起動確認"), _entry("assistant", "r", text="READY")])
+
+        sleep, now = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, last_assistant_message="READY", sleep=sleep, now=now,
+                                 own_transcript_path=str(new_own), session_id="rec-new")
+        assert code == 2
+        assert "片0001を処理せよ" in stderr
+        assert "受け付けていない" not in stderr
+        pending = _cursor(run_dir)["pending"]
+        assert pending["retries"] == 0  # 新しい記録役は片を受け取っていないので再送の回数を使わない
+        assert pending["recipient_sid"] == "rec-new"
+        assert pending["transcript_path"] == str(new_own)
+        assert pending["transcript_offset"] == new_own.stat().st_size
+
+        _append_jsonl(new_own, _search_evidence("s1"))
+        sleep2, now2 = _stub_sleep_and_clock()
+        _run_hook(cwd=run_dir, last_assistant_message="SKIP 記録対象なし x\nDONE 0001", sleep=sleep2, now=now2,
+                  own_transcript_path=str(new_own), session_id="rec-new")
+        assert _cursor(run_dir)["pending"] is None
+
+    def test_restart_after_a_resend_still_delivers_the_shard(self, tmp_path, monkeypatch):
+        """証跡不足で1回再送した後に記録役が立て直されても、片はunackedにならず
+        新しい記録役へ渡り直す。"""
+        run_dir, own = self._emit_first_chunk(tmp_path, monkeypatch, session_id="rec-old")
+        sleep, now = _stub_sleep_and_clock()
+        _run_hook(cwd=run_dir, last_assistant_message="DONE 0001", sleep=sleep, now=now,
+                  own_transcript_path=str(own), session_id="rec-old")
+        assert _cursor(run_dir)["pending"]["retries"] == 1
+
+        new_own = tmp_path / "recorder_new.jsonl"
+        _write_jsonl(new_own, [_entry("assistant", "r", text="READY")])
+        sleep2, now2 = _stub_sleep_and_clock()
+        code, stderr = _run_hook(cwd=run_dir, last_assistant_message="READY", sleep=sleep2, now=now2,
+                                 own_transcript_path=str(new_own), session_id="rec-new")
+        assert code == 2
+        assert "片0001を処理せよ" in stderr
+        cursor = _cursor(run_dir)
+        assert cursor["unacked"] == []
+        assert cursor["pending"]["recipient_sid"] == "rec-new"
