@@ -149,7 +149,7 @@ class AxisB:
     met: bool
 
 
-_EMPTY_PUBLIC_IF_DELTA = {
+_EMPTY_PUBLIC_IF_DELTA: dict[str, list[str]] = {
     "tools_added": [],
     "tools_removed": [],
     "params_changed": [],
@@ -734,7 +734,8 @@ def run_detector(repo: Path, base_ref: str, head_ref: str, detector_source: str 
     if not errors:
         try:
             touches_main = any(p in ("src/main.py",) for c in changes for p in (c.path, c.old_path) if p)
-            if touches_main:
+            # merge_base が None なのは取得に失敗して errors がある場合だけ
+            if touches_main and merge_base is not None:
                 base_source = _git_show_file(repo, merge_base, "src/main.py")
                 head_source = _git_show_file(repo, head_ref, "src/main.py")
                 public_if_delta = compute_public_if_delta(base_source, head_source, errors)

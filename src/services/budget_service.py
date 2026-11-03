@@ -63,7 +63,13 @@ def compute_allocation_order(
     order.sort(key=lambda did: decision_by_id[did]["created_at"], reverse=True)
     order.sort(key=lambda did: 1 if supersede_map.get(did, {}).get("is_superseded") else 0)
     if topic_rank is not None and owner_of is not None:
-        order.sort(key=lambda did: topic_rank.get(owner_of.get(did), len(topic_rank)))
+        unranked = len(topic_rank)
+
+        def _topic_order(did: int) -> int:
+            owner = owner_of.get(did)
+            return unranked if owner is None else topic_rank.get(owner, unranked)
+
+        order.sort(key=_topic_order)
     return order
 
 

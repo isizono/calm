@@ -399,8 +399,8 @@ def prune_orphaned_plugin_versions(project_root: Path) -> dict:
     可能性があるため、削除直前に`lsof`でオープン中のファイルハンドルが
     無いことも確認する。
     """
-    removed = []
-    skipped = []
+    removed: list[str] = []
+    skipped: list[dict[str, str]] = []
 
     if (project_root / ".git").exists():
         return {"removed": removed, "skipped": skipped}

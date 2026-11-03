@@ -649,6 +649,8 @@ def _win_stdin_pipe_api(fd: int):
     importする。共有の`ctypes.windll.kernel32`にargtypesを設定すると
     プロセス全体に影響するため、専用の`WinDLL`を使う。
     """
+    if sys.platform != "win32":
+        raise RuntimeError("_win_stdin_pipe_api は Windows 専用")
     import ctypes
     import msvcrt
     from ctypes import wintypes

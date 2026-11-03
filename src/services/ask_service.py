@@ -418,11 +418,12 @@ def get_asks_with_conn(
     if kind is not None and kind not in VALID_KINDS:
         return _validation_error(f"Invalid kind: {kind!r}. Must be one of {sorted(VALID_KINDS)} or null")
 
-    parsed_tags = None
+    parsed_tags: list[tuple[str, str]] | None = None
     if tags is not None:
-        parsed_tags = validate_and_parse_tags(tags, required=True)
-        if isinstance(parsed_tags, dict):
-            return parsed_tags
+        parsed = validate_and_parse_tags(tags, required=True)
+        if isinstance(parsed, dict):
+            return parsed
+        parsed_tags = parsed
 
     limit = min(max(limit, 1), _MAX_LIMIT)
     offset = max(offset, 0)

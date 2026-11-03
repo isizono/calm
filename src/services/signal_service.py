@@ -143,10 +143,9 @@ def record_signal(
     fingerprint = _compute_fingerprint(kind, source, summary)
 
     own_conn = conn is None
-    if own_conn:
-        conn = get_connection()
+    db = get_connection() if conn is None else conn
     try:
-        cursor = conn.execute(
+        cursor = db.execute(
             """
             INSERT INTO signal_events
                 (kind, source, summary, detail, refs, context, fingerprint, session_id)
@@ -166,7 +165,7 @@ def record_signal(
         row = cursor.fetchone()
         signal_id, occurrence_count = row[0], row[1]
         if own_conn:
-            conn.commit()
+            db.commit()
         # INSERT は常に occurrence_count=1 で始まるため、2 以上なら
         # ON CONFLICT 側 (dedup) が発火したことを意味する。
         return {
@@ -176,11 +175,11 @@ def record_signal(
         }
     except Exception:
         if own_conn:
-            conn.rollback()
+            db.rollback()
         raise
     finally:
         if own_conn:
-            conn.close()
+            db.close()
 
 
 def capture_signal_safe(

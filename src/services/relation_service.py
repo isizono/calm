@@ -854,7 +854,7 @@ def _get_map_with_conn(
     topic_materials_counts = count_materials_per_topic(conn, topic_ids) if topic_ids else {}
 
     # 存在するIDのセットを構築（存在しないIDを除外するため）
-    existing_ids = set()
+    existing_ids: set[tuple[str, int]] = set()
     existing_ids.update(("topic", tid) for tid in topic_titles)
     existing_ids.update(("activity", aid) for aid in activity_titles)
     existing_ids.update(("material", mid) for mid in material_titles)
