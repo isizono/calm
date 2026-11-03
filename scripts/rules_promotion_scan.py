@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 # プロジェクトルートをパスに追加（src.services.* の参照用）
 _project_root = Path(__file__).resolve().parents[1]
@@ -121,7 +122,8 @@ def _embed_texts(texts: list[str]) -> list[list[float]] | None:
             return None
         for idx, embedding in zip(chunk_indices, chunk_embeddings, strict=False):
             embeddings[idx] = embedding
-    return embeddings
+    # 全チャンクが成功した時点で、どの位置にもembeddingが入っている
+    return cast(list[list[float]], embeddings)
 
 
 def scan_candidates(
