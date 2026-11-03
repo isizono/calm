@@ -11,6 +11,8 @@ from hooks.session_start_hook import (
     _ASK_SERVICE_MAX_LIMIT,
     _OPEN_ASKS_GLOBAL_CTA,
     _OPEN_ASKS_NON_META_DISPLAY_LIMIT,
+    _ORPHAN_CTA,
+    _ORPHAN_MARK,
     _build_open_asks_section,
     _section_text_len,
 )
@@ -652,3 +654,57 @@ class TestErrorFallback:
         finally:
             conn.close()
         assert result == ""
+
+
+class TestOrphanedPendingAsk:
+    """受け手が残っていない回答済みaskに目印を付け、対面の窓にだけ拾う手順を出す。"""
+
+    def _orphaned_and_fresh(self, conn) -> tuple[int, int]:
+        orphaned = _seed_ask(conn, "誰も拾わない問い")
+        fresh = _seed_ask(conn, "答えたばかりの問い")
+        _answer_ask(conn, orphaned)
+        _answer_ask(conn, fresh)
+        conn.execute("UPDATE asks SET answered_at = datetime('now', '-2 days') WHERE id = ?", (orphaned,))
+        conn.commit()
+        return orphaned, fresh
+
+    def test_attended_window_gets_mark_and_pickup_step(self, temp_db, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
+        conn = get_connection()
+        try:
+            orphaned, fresh = self._orphaned_and_fresh(conn)
+            text = _build_open_asks_section(conn)
+        finally:
+            conn.close()
+
+        lines = text.splitlines()
+        orphan_line = next(line for line in lines if f"(#{orphaned})" in line)
+        fresh_line = next(line for line in lines if f"(#{fresh})" in line)
+        assert orphan_line.endswith(_ORPHAN_MARK)
+        assert _ORPHAN_MARK not in fresh_line
+        assert _ORPHAN_CTA in lines
+        assert lines.index(_ORPHAN_CTA) < lines.index(_OPEN_ASKS_GLOBAL_CTA)
+
+    def test_unattended_session_gets_mark_without_pickup_step(self, temp_db, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "0")
+        conn = get_connection()
+        try:
+            orphaned, _ = self._orphaned_and_fresh(conn)
+            text = _build_open_asks_section(conn)
+        finally:
+            conn.close()
+
+        assert f"(#{orphaned})" in text and _ORPHAN_MARK in text
+        assert _ORPHAN_CTA not in text
+
+    def test_no_pickup_step_without_orphans(self, temp_db, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
+        conn = get_connection()
+        try:
+            ask = _seed_ask(conn, "答えたばかりの問い")
+            _answer_ask(conn, ask)
+            text = _build_open_asks_section(conn)
+        finally:
+            conn.close()
+
+        assert _ORPHAN_MARK not in text and _ORPHAN_CTA not in text

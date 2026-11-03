@@ -20,6 +20,10 @@ SNOOZE_DURATION_DAYS: int = int(env_get("CALM_SNOOZE_DURATION_DAYS", "3"))
 # 担い手human/externalのopen条件で、この時間その行への書き込みが無ければrecheckフラグを立てる
 GOAL_RECHECK_HOURS: int = int(env_get("CALM_GOAL_RECHECK_HOURS", "6"))
 
+# --- Ask ---
+# 回答済み未triageのaskを、回答からこの秒数たっても受け手がいなければ「拾い手なし」とみなす
+ASK_ORPHAN_GRACE_SEC: int = int(env_get("CALM_ASK_ORPHAN_GRACE_SEC", "3600"))
+
 # --- Active Context 表示 ---
 # SessionStart一覧の階層2（優先）に in_progress アクティビティを載せる updated_at 上限（日）
 TIER2_MAX_AGE_DAYS: int = int(env_get("CALM_TIER2_MAX_AGE_DAYS", "7"))
