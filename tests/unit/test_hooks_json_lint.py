@@ -261,11 +261,25 @@ def test_script_module_imports_succeed_under_declared_cwd(script_path: Path):
     )
 
 
+_CODEX_WRAPPER = _HOOKS_DIR / "codex_run.sh"
+
+
+def _run_wrapper(script: str, path_dir: Path, home: Path) -> subprocess.CompletedProcess:
+    # shは絶対パスで起動し、PATHは指定ディレクトリだけにして実環境のuvの有無に依存させない。
+    return subprocess.run(
+        ["/bin/sh", str(_CODEX_WRAPPER), script],
+        env={"PATH": str(path_dir), "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 class TestCodexLaunchContract:
     """Codexが.codex配下の登録を起動するときの前提を固定する。"""
 
-    def test_hooks_run_via_wrapper_from_plugin_root(self):
-        """cwd基準の解決（git rev-parse）に戻らず、全コマンドがラッパー経由であること。"""
+    def test_every_codex_hook_goes_through_existing_wrapper(self):
+        """全コマンドがラッパーを呼び、引数のスクリプトが実在し、cwd基準の解決に戻っていない。"""
         data = json.loads(_CODEX_HOOKS_JSON_PATH.read_text(encoding="utf-8"))
         commands = [
             h["command"]
@@ -275,8 +289,11 @@ class TestCodexLaunchContract:
         ]
         assert commands
         for command in commands:
+            assert _CODEX_WRAPPER.name in command
             assert "git rev-parse" not in command
-            assert command.startswith('sh "${CLAUDE_PLUGIN_ROOT}/hooks/codex_run.sh" hooks/')
+        registered = _registered_scripts_by_event(_CODEX_HOOKS_JSON_PATH)
+        assert sum(len(v) for v in registered.values()) == len(commands)
+        assert _CODEX_WRAPPER.exists()
 
     @pytest.mark.parametrize(
         "script,expects_message",
@@ -288,24 +305,34 @@ class TestCodexLaunchContract:
     )
     def test_wrapper_passes_through_without_uv(self, tmp_path, script, expects_message):
         """uvが無いとき、発話をブロックせず(exit 0)、案内はJSONのsystemMessageで出す。"""
-        result = subprocess.run(
-            ["/bin/sh", str(_HOOKS_DIR / "codex_run.sh"), script],
-            env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        empty_bin = tmp_path / "bin"
+        empty_bin.mkdir()
+        result = _run_wrapper(script, empty_bin, tmp_path)
         assert result.returncode == 0
         if expects_message:
             assert "uv" in json.loads(result.stdout)["systemMessage"]
         else:
             assert result.stdout == ""
 
-    def test_mcp_declaration_has_no_unexpanded_placeholder(self):
-        """CodexはプラグインのMCP宣言のargs内の${...}を展開しない。相対cwdはプラグインルートに解決される。"""
-        data = json.loads((_PROJECT_ROOT / ".codex" / "mcp.json").read_text(encoding="utf-8"))
-        server = data["calm"]
-        assert not any("${" in a for a in server["args"])
-        assert server["cwd"] == "."
+    def test_wrapper_execs_uv_run_with_codex_env(self, tmp_path):
+        """uvがあるとき、`uv run python <script>` へ引数をそのまま渡し、CALM_HARNESS=codexとUTF-8を設定する。"""
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_uv = fake_bin / "uv"
+        fake_uv.write_text(
+            '#!/bin/sh\necho "$@"\necho "$CALM_HARNESS $PYTHONUTF8"\n', encoding="utf-8"
+        )
+        fake_uv.chmod(0o755)
+        result = _run_wrapper("hooks/stop_hook.py", fake_bin, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.splitlines() == ["run python hooks/stop_hook.py", "codex 1"]
+
+    def test_mcp_declaration_is_consistent_with_manifest(self):
+        """マニフェストが指すMCP宣言が実在し、Codexが展開しない${...}を含まず、cwdでプラグインルートを指す。"""
         manifest = json.loads((_PROJECT_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-        assert manifest["mcpServers"] == "./.codex/mcp.json"
+        mcp_path = _PROJECT_ROOT / manifest["mcpServers"]
+        assert mcp_path.is_file()
+        for server in json.loads(mcp_path.read_text(encoding="utf-8")).values():
+            assert not any("${" in a for a in server["args"])
+            assert "--directory" not in server["args"]
+            assert "cwd" in server

@@ -2,6 +2,7 @@
 # Codex用のhook起動ラッパー。使い方: sh codex_run.sh hooks/<name>.py
 # uvが無い環境ではPythonを起動できないため、ここで検知して発話を止めずに素通りさせる。
 # Codexはexit 2だけをブロック扱いにし、他の非0は失敗表示で流すので、exit 0で終える。
+# cdに失敗するのはスクリプトの置き場が壊れているときだけ。hookの不調で発話を止めないよう、案内なしで素通りさせる。
 cd "$(dirname "$0")/.." || exit 0
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
@@ -13,4 +14,5 @@ if ! command -v uv >/dev/null 2>&1; then
   esac
   exit 0
 fi
+export PYTHONUTF8=1
 CALM_HARNESS=codex exec uv run python "$@"

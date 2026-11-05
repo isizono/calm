@@ -62,6 +62,10 @@ codex plugin marketplace add isizono/calm
 codex plugin add calm@calm-marketplace
 ```
 
+初回は対話画面（TUI）で一度Codexを起動し、CALMのhookを信頼してください。信頼するまで、hookは何も表示されずに飛ばされます。信頼した状態は、Codexのバージョンを上げても保たれることを確認しています。
+
+CALMのMCPツールは、承認なしで呼ばれる設定（`default_tools_approval_mode = "approve"`）で配布しています。
+
 初回のセッションでは依存パッケージの同期（sentence-transformersとtorchを含む）が走ります。macOS（Apple Silicon）の空のキャッシュで約13秒でした。hookの既定タイムアウトは600秒なので収まります。MCPサーバーの起動待ちは既定30秒のため、CALMは300秒に延ばしています。ネットワークが遅い環境で最初の接続が失敗したら、同期の完了後にCodexを再起動してください。
 
 ### Windows 11での利用
