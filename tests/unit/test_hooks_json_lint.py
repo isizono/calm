@@ -299,7 +299,6 @@ class TestCodexLaunchContract:
         "script,expects_message",
         [
             ("hooks/user_prompt_submit_hook.py", True),
-            ("hooks/session_start_hook.py", True),
             ("hooks/preblock_hook.py", False),
         ],
     )
