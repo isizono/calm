@@ -5,6 +5,6 @@
     "name": "isizono"
   },
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex/mcp.json",
   "hooks": "./.codex/hooks.json"
 }

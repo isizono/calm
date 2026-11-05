@@ -2,7 +2,7 @@
 
 CALM（Concurrent, autonomous, loosely-coupled minds）は、複数のAIエージェントのセッションが、記録を介して互いの状況を知りながら協力して動けるようにすることを目指しているプラグインです。協力して動く部分はまだほとんど実現できておらず、現状で使えるのは、セッションをまたいで議論の文脈・決定事項・作業状況を引き継ぐ部分が中心です。
 
-現状のメイン実装はClaude Codeで、Codex向けの対応は実装中です。
+現状のメイン実装はClaude Codeで、Codexへの対応も進めています（導入手順は下の「Codexで入れる場合」）。
 
 ## 使うとどうなるか
 
@@ -46,6 +46,29 @@ claude plugin install calm
 初回起動時は依存パッケージの取得（`uv sync`。torch等を含み`.venv`は約860MB）とembeddingモデル（約290MB）のダウンロードのため時間がかかります。これはネットワーク接続が必要な一度きりの処理で、2回目以降はキャッシュされるため高速になります。
 
 依存の取得がClaude CodeのMCP接続待ち（30秒）を超えると、初回の`/mcp`がconnectedにならないことがあります。その場合は、プラグインのディレクトリ（`~/.claude/plugins/cache/calm-marketplace/calm/<版>/`）で`uv sync --frozen`を一度実行してから、`/mcp`で再接続してください。
+
+### Codexで入れる場合
+
+Claude Codeを使わずCodexだけで入れる手順です。
+
+前提条件:
+
+- [uv](https://docs.astral.sh/uv/) がインストールされていること。hookもMCPサーバーもuv経由で起動します。MCPサーバーはCodexのPATHにuvが見えている必要があります。uvが無いとhookは「uvが必要」という案内を出して何もせず通り、CALMは動きません。
+- Python 3.12+は、uvが必要に応じて取得するのでmacOS（Apple Silicon）では自分で入れなくて済みます。uvが取得するPythonでSQLite拡張のロードが使えることは、macOS（Apple Silicon）で確認しています。他のOSでは確認していません。
+- hookはPOSIXシェル前提です。Windowsは確認していません。
+
+インストール:
+
+```bash
+codex plugin marketplace add isizono/calm
+codex plugin add calm@calm-marketplace
+```
+
+初回は対話画面（TUI）で一度Codexを起動し、CALMのhookを信頼してください。信頼するまで、hookは何も表示されずに飛ばされます。信頼した状態は、Codexのバージョンを上げても保たれることを確認しています。
+
+CALMのMCPツールは、承認なしで呼ばれる設定（`default_tools_approval_mode = "approve"`）で配布しています。
+
+初回のセッションでは依存パッケージの同期（sentence-transformersとtorchを含む）が走ります。macOS（Apple Silicon）の空のキャッシュで約13秒でした。hookの既定タイムアウトは600秒なので収まります。MCPサーバーの起動待ちは既定30秒のため、CALMは300秒に延ばしています。ネットワークが遅い環境で最初の接続が失敗したら、同期の完了後にCodexを再起動してください。
 
 ### Windows 11での利用
 
