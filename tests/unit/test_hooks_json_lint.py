@@ -314,17 +314,39 @@ class TestCodexLaunchContract:
             assert result.stdout == ""
 
     def test_wrapper_execs_uv_run_with_codex_env(self, tmp_path):
-        """uvがあるとき、`uv run python <script>` へ引数をそのまま渡し、CALM_HARNESS=codexとUTF-8を設定する。"""
+        """uvがあるとき、`uv run python <script>` へ引数をそのまま渡し、CALM_HARNESS=codexとUTF-8を設定し、プラグインルートで実行する(PATHにdirnameが無くても)。"""
         fake_bin = tmp_path / "bin"
         fake_bin.mkdir()
         fake_uv = fake_bin / "uv"
         fake_uv.write_text(
-            '#!/bin/sh\necho "$@"\necho "$CALM_HARNESS $PYTHONUTF8"\n', encoding="utf-8"
+            '#!/bin/sh\necho "$@"\necho "$CALM_HARNESS $PYTHONUTF8"\npwd -P\n', encoding="utf-8"
         )
         fake_uv.chmod(0o755)
         result = _run_wrapper("hooks/stop_hook.py", fake_bin, tmp_path)
         assert result.returncode == 0
-        assert result.stdout.splitlines() == ["run python hooks/stop_hook.py", "codex 1"]
+        assert result.stdout.splitlines() == [
+            "run python hooks/stop_hook.py",
+            "codex 1",
+            str(_PROJECT_ROOT.resolve()),
+        ]
+
+    def test_wrapper_runs_at_plugin_root_when_invoked_by_bare_name(self, tmp_path):
+        """$0にスラッシュが無い(hooksディレクトリから相対名で起動)ときも、プラグインルートで実行する。"""
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_uv = fake_bin / "uv"
+        fake_uv.write_text('#!/bin/sh\npwd -P\n', encoding="utf-8")
+        fake_uv.chmod(0o755)
+        result = subprocess.run(
+            ["/bin/sh", _CODEX_WRAPPER.name, "hooks/stop_hook.py"],
+            cwd=_HOOKS_DIR,
+            env={"PATH": str(fake_bin), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0
+        assert result.stdout.splitlines() == [str(_PROJECT_ROOT.resolve())]
 
     def test_mcp_declaration_is_consistent_with_manifest(self):
         """マニフェストが指すMCP宣言が実在し、Codexが展開しない${...}を含まず、cwdでプラグインルートを指す。"""
