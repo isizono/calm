@@ -160,6 +160,28 @@ class TestValidation:
         result = import_bundle(str(bad_bundle), mode="apply")
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
+    def test_apply_rejects_manifest_without_bundle_id_before_writing(self, dbs, mock_embedding_server):
+        db_a, db_b = dbs
+        _switch_db(db_a)
+        _set_instance("team-a")
+        m1 = _material(title="Origin Material", content="hello from team-a")
+        bundle = export_bundle(items=[{"type": "material", "ids": [m1]}])
+        manifest_path = os.path.join(bundle["path"], "manifest.yaml")
+        with open(manifest_path, encoding="utf-8") as f:
+            lines = f.read().splitlines(keepends=True)
+        kept = [line for line in lines if not line.startswith("bundle_id:")]
+        assert len(kept) == len(lines) - 1
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+
+        _switch_db(db_b)
+        _set_instance("team-b")
+        result = import_bundle(bundle["path"], mode="apply")
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "bundle_id" in result["error"]["message"]
+        assert _count_rows("materials") == 0
+        assert _count_rows("import_provenance") == 0
+
     def test_path_outside_export_dir_rejected(self, dbs):
         db_a, db_b = dbs
         _switch_db(db_b)
