@@ -377,7 +377,7 @@ def lint_document(text: str, mode: str = "shadow", allow_placeholder: bool = Fal
     data, l1_err = extract_machine_block(text)
     if l1_err:
         errors.append(l1_err)
-    elif data.get("schema_version") != SCHEMA_VERSION:
+    elif data is not None and data.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"L1: 未知の schema_version: {data.get('schema_version')!r}")
 
     body = _body_after_fence(text)

@@ -549,14 +549,14 @@ def export_bundle(
 
         rows_by_key: dict[tuple[str, int], dict] = {}
         missing: list[str] = []
-        for etype, ids in requested.items():
-            rows = _fetch_rows_for_type_with_conn(conn, etype, list(ids))
+        for etype, requested_ids in requested.items():
+            rows = _fetch_rows_for_type_with_conn(conn, etype, list(requested_ids))
             found_ids: set[int] = set()
             for row in rows:
                 row_d = row_to_dict(row)
                 rows_by_key[(etype, row_d["id"])] = row_d
                 found_ids.add(row_d["id"])
-            for missing_id in sorted(ids - found_ids):
+            for missing_id in sorted(requested_ids - found_ids):
                 missing.append(f"{etype}#{missing_id}")
         if missing:
             return {
@@ -648,8 +648,8 @@ def export_bundle(
 
         related_by_key: dict[tuple[str, int], list[tuple[str, int]]] = {}
         for etype, ids in ids_by_type.items():
-            m = _fetch_related_ids_with_conn(conn, etype, ids)
-            for eid, targets in m.items():
+            related_map = _fetch_related_ids_with_conn(conn, etype, ids)
+            for eid, targets in related_map.items():
                 related_by_key[(etype, eid)] = targets
 
         supersedes_by_key = _fetch_supersedes_with_conn(conn, ids_by_type.get("decision", []))
@@ -732,7 +732,7 @@ def export_bundle(
                         all_refs.append(("activity", did, (etype, eid)))
 
             tags = tags_by_key.get((etype, eid), [])
-            created_at = row_d.get("created_at")
+            created_at = row_d["created_at"]
             updated_at = row_d.get("updated_at")
             retracted_at = row_d.get("retracted_at")
             source = row_d.get("source")

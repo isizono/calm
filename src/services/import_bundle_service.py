@@ -34,6 +34,7 @@ import re
 import sqlite3
 from collections import defaultdict
 from datetime import UTC, datetime
+from typing import cast
 
 import yaml
 from sqlite_vec import serialize_float32
@@ -136,7 +137,7 @@ def _strip_leading_heading(text: str, marker: str) -> str:
     return "\n".join(lines[idx:]).strip("\n")
 
 
-def _parse_body_fields(etype: str, body: str) -> dict[str, str]:
+def _parse_body_fields(etype: str | None, body: str) -> dict[str, str]:
     """本文からフィールドを抽出する(export_bundle_service._build_body_textの逆変換)。
 
     frontmatterのtitleを正としh1見出しは無視する。decisionのみ2フィールド
@@ -157,7 +158,7 @@ def _parse_body_fields(etype: str, body: str) -> dict[str, str]:
             "decision": _strip_leading_heading(decision_part, "## "),
             "reason": _strip_leading_heading(reason_part, "## "),
         }
-    main_field = _MAIN_FIELD.get(etype)
+    main_field = _MAIN_FIELD.get(etype) if etype is not None else None
     if main_field is None:
         return {}
     return {main_field: _strip_leading_heading(body, "# ")}
@@ -804,6 +805,7 @@ def _determine_action(
     Returns: "create" | "update" | "skip"
     """
     override = entity_overrides.get(key)
+    override_action: str | None
     if isinstance(override, str):
         override_action = override
     elif isinstance(override, dict):
@@ -819,7 +821,8 @@ def _determine_action(
     if status == "updatable":
         return "update"
     if status == "upstream_changed_skip":
-        etype = cls.get("type")
+        # upstream_changed_skip は TYPE_TO_TABLE にある type の分類にしか付かない
+        etype = cls["type"]
         if override_action == "import" or on_upstream_change.get(etype) == "overwrite":
             return "update"
         return "skip"
@@ -864,7 +867,8 @@ def _create_entity_row_with_conn(
         )
     else:
         raise ValueError(f"unsupported entity type: {etype}")
-    return cur.lastrowid
+    # INSERT 直後なので None にはならない
+    return cast(int, cur.lastrowid)
 
 
 def _update_entity_row_with_conn(
@@ -968,7 +972,7 @@ def _apply_bundle_with_conn(
     conn: sqlite3.Connection,
     manifest: dict,
     bundle_id: str,
-    source_instance: str,
+    source_instance: str | None,
     format_version_ok: bool,
     parsed_entities: dict[str, dict],
     classifications: dict[str, dict],
@@ -1293,6 +1297,14 @@ def import_bundle(
                     "error": {
                         "code": "VALIDATION_ERROR",
                         "message": f"unsupported bundle format: {manifest.get('format')!r} (expected {BUNDLE_FORMAT!r})",
+                    }
+                }
+            # 出自記録(import_provenance.bundle_id)は NOT NULL なので、書き込む前に弾く
+            if not isinstance(bundle_id, str) or not bundle_id:
+                return {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "manifest.bundle_id must be a non-empty string",
                     }
                 }
             return _apply_bundle_with_conn(

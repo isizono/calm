@@ -29,6 +29,12 @@ pre-commit install
 uv run ruff check .
 ```
 
+型チェックには [mypy](https://mypy.readthedocs.io/) を使っており、設定は `pyproject.toml` の `[tool.mypy]` にあります。CI の `mypy` ジョブでも同じコマンドを実行します。
+
+```bash
+uv run mypy
+```
+
 ## ブランチと worktree
 
 - `main` への直接 push は禁止です。変更はすべて PR で行います

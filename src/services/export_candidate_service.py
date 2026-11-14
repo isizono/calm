@@ -13,6 +13,7 @@ navigation用途の既存契約（decision/logはグラフ走査の経由ノー�
 import logging
 import sqlite3
 from collections import defaultdict
+from typing import Any
 
 from src.db import get_connection, row_to_dict
 from src.services.citations_pure import (
@@ -201,15 +202,15 @@ def _fetch_titles_with_conn(
     """closure_warnings用: 候補集合外のエンティティのタイトルを一括取得する。"""
     titles: dict[tuple[str, int], str] = {}
     for etype, ids in ids_by_type.items():
-        ids = [i for i in ids if i is not None]
-        if not ids:
+        id_list = [i for i in ids if i is not None]
+        if not id_list:
             continue
         table = TYPE_TO_TABLE[etype]
         title_expr = TYPE_TO_TITLE_EXPR[etype]
-        placeholders = ",".join("?" * len(ids))
+        placeholders = ",".join("?" * len(id_list))
         rows = conn.execute(
             f"SELECT id, {title_expr} AS title FROM {table} WHERE id IN ({placeholders})",
-            ids,
+            id_list,
         ).fetchall()
         for row in rows:
             titles[(etype, row["id"])] = row["title"]
@@ -237,8 +238,8 @@ def _build_closure_warnings_with_conn(
         ids = ids_by_type.get(etype, [])
         if not ids:
             continue
-        m = _fetch_belongs_to_ids_with_conn(conn, etype, ids)
-        for eid, topic_ids in m.items():
+        belongs_to_map = _fetch_belongs_to_ids_with_conn(conn, etype, ids)
+        for eid, topic_ids in belongs_to_map.items():
             for tid in topic_ids:
                 if ("topic", tid) not in candidate_set:
                     belongs_to_pairs.append(((etype, eid), tid))
@@ -246,8 +247,8 @@ def _build_closure_warnings_with_conn(
     # related(全型共通)
     related_pairs: list[tuple[tuple[str, int], tuple[str, int]]] = []
     for etype, ids in ids_by_type.items():
-        m = _fetch_related_ids_with_conn(conn, etype, ids)
-        for eid, targets in m.items():
+        related_map = _fetch_related_ids_with_conn(conn, etype, ids)
+        for eid, targets in related_map.items():
             for target_type, target_id in targets:
                 if (target_type, target_id) not in candidate_set:
                     related_pairs.append(((etype, eid), (target_type, target_id)))
@@ -256,8 +257,8 @@ def _build_closure_warnings_with_conn(
     depends_on_pairs: list[tuple[tuple[str, int], int]] = []
     activity_ids = ids_by_type.get("activity", [])
     if activity_ids:
-        m = _fetch_depends_on_with_conn(conn, activity_ids)
-        for eid, dep_ids in m.items():
+        depends_on_map = _fetch_depends_on_with_conn(conn, activity_ids)
+        for eid, dep_ids in depends_on_map.items():
             for did in dep_ids:
                 if ("activity", did) not in candidate_set:
                     depends_on_pairs.append((("activity", eid), did))
@@ -403,7 +404,7 @@ def _compute_co_tags_with_conn(
         tag_ids,
     ).fetchall()
 
-    result = [
+    result: list[dict[str, Any]] = [
         {
             "tag": f"{row['namespace']}:{row['name']}",
             "overlap": co_counts[row["id"]],
@@ -491,9 +492,10 @@ def collect_export_candidates(
     # DB接続・グラフ走査の前にfail fastする（roots側の重い走査を無駄に先行させない）。
     parsed_tag_roots: list[tuple[str, str]] = []
     if tag_roots:
-        parsed_tag_roots = validate_and_parse_tags(tag_roots)
-        if isinstance(parsed_tag_roots, dict):
-            return parsed_tag_roots
+        parsed = validate_and_parse_tags(tag_roots)
+        if isinstance(parsed, dict):
+            return parsed
+        parsed_tag_roots = parsed
 
     conn = get_connection(load_vec=False)
     try:
@@ -504,8 +506,8 @@ def collect_export_candidates(
             traversal_rows = _traverse_relations_with_conn(
                 conn, root_tuples, max_depth, catalog_types=set(ALL_CATALOG_TYPES), min_depth=0
             )
-            for row in traversal_rows:
-                depth_by_key[(row["entity_type"], row["entity_id"])] = row["depth"]
+            for traversal_row in traversal_rows:
+                depth_by_key[(traversal_row["entity_type"], traversal_row["entity_id"])] = traversal_row["depth"]
 
         tag_root_ids: list[int] = []
         seed_keys: set[tuple[str, int]] = set()
