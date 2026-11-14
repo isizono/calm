@@ -29,12 +29,10 @@ pre-commit install
 uv run ruff check .
 ```
 
-型チェックには [mypy](https://mypy.readthedocs.io/) を使っており、設定は `pyproject.toml` の `[tool.mypy]` にあります。既存のエラーはファイルごとの件数を `mypy-baseline.json` に置き、CI の `mypy` ジョブで件数が増えていないかを検査します。エラーを直して件数が減ったときは、`--update` で基準値を下げてください。
+型チェックには [mypy](https://mypy.readthedocs.io/) を使っており、設定は `pyproject.toml` の `[tool.mypy]` にあります。CI の `mypy` ジョブでも同じコマンドを実行します。
 
 ```bash
-uv run python scripts/check_mypy_baseline.py
-# 件数が減ったとき
-uv run python scripts/check_mypy_baseline.py --update
+uv run mypy
 ```
 
 ## ブランチと worktree

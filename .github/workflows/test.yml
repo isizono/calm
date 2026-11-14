@@ -114,10 +114,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      # 既存エラーはファイルごとの件数で mypy-baseline.json に持ち、増えたら落とす。
-      # 全ファイル0件になったら普通の `uv run mypy` に置き換える
-      - name: Check mypy errors do not exceed mypy-baseline.json
-        run: uv run python scripts/check_mypy_baseline.py
+      # 対象と設定は pyproject.toml の [tool.mypy]
+      - name: Run mypy
+        run: uv run mypy
 
   doc-gen-drift:
     runs-on: ubuntu-latest

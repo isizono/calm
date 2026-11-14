@@ -29,7 +29,6 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.mypy]
-# 既存エラーは mypy-baseline.json のファイル別件数で管理する（scripts/check_mypy_baseline.py）
 files = ["src", "scripts"]
 explicit_package_bases = true
 ignore_missing_imports = true
