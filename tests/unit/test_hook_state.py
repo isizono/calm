@@ -451,3 +451,63 @@ class TestMainCli:
         )
         assert result.returncode == 0
         assert state.get_tracked_ask_ids() == []
+
+
+class TestClearForSource:
+    """SessionStartのsourceごとに何が残るか（#911: resumeで未配達のnudgeが消えない）"""
+
+    def test_resume_keeps_only_undelivered_nudges(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("resume-sess")
+        state.set_current_turn(4)
+        state.set_transcript_offset(1234)
+        state.append_events(
+            [
+                {"e": "tool", "name": "add_logs", "turn": 1},
+                {"e": "nudge", "type": "record_missing", "turn": 2, "consumed": True},
+                {"e": "nudge", "type": "logs_sparse", "turn": 4, "topic_id": 9, "message": "m"},
+            ]
+        )
+
+        HookState.clear_for_source("resume-sess", "resume")
+
+        # 配達済みのnudgeとtoolイベントは消え、未配達のnudgeだけが残る
+        assert state.read_events() == [
+            {"e": "nudge", "type": "logs_sparse", "turn": 4, "topic_id": 9, "message": "m"},
+        ]
+        # transcriptの読み直し位置は消えるので、次のStopが先頭からイベントを作り直す
+        assert state.get_current_turn() == 0
+        assert state.get_transcript_offset() == 0
+
+    def test_resume_without_pending_nudges_leaves_no_events_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("resume-empty")
+        state.append_events([{"e": "nudge", "type": "record_missing", "turn": 2, "consumed": True}])
+
+        HookState.clear_for_source("resume-empty", "resume")
+
+        assert not state.events_path.exists()
+
+    @pytest.mark.parametrize("source", ["startup", "clear", None])
+    def test_other_sources_still_clear_nudges(self, tmp_path, monkeypatch, source):
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("other-sess")
+        state.append_events([{"e": "nudge", "type": "record_missing", "turn": 2}])
+
+        HookState.clear_for_source("other-sess", source)
+
+        assert state.read_events() == []
+
+    def test_compact_keeps_preserved_files_but_not_nudges(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(HookState, "BASE_DIR", tmp_path)
+        state = HookState("compact-sess")
+        state.set_current_turn(3)
+        state.append_events([{"e": "nudge", "type": "record_missing", "turn": 2}])
+        preserved = tmp_path / "tracked_ask_ids_compact-sess"
+        preserved.write_text("[7]", encoding="utf-8")
+
+        HookState.clear_for_source("compact-sess", "compact")
+
+        assert preserved.read_text(encoding="utf-8") == "[7]"
+        assert state.get_current_turn() == 0
+        assert state.read_events() == []

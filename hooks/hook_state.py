@@ -256,6 +256,19 @@ class HookState:
 
     # --- clear_session ---
 
+    # compact時にクリア対象から除外するprefix。tracked_ask_ids（このセッションが
+    # add_askし通知待ちで追跡中のask_id一覧）はcompactをまたいで生存すべき情報
+    # のため保持する（resume/clear/startupではクリアされる。質問者セッションが
+    # 実質終わった扱いとみなし、以降の回収はpull（check_in/get_asks）に委ねる
+    # 設計）。
+    # notified_ask_ids（check_in先と隣の作業のaskとして既に知らせたask_id一覧）も
+    # 保持する。compactで消すと、直後のStopがtranscriptを先頭から読み直して
+    # check_in先とcheck_in時刻を元の値で復元し、知らせ済みのaskをもう一度知らせてしまう。
+    # sanitize_offset / sanitize_failure_count も同様にセッション単位の進行状態
+    # であり、compactで消すとsanitize_backfill_hookの冪等な再開とループ防止
+    # ガードがcompactごとにリセットされてしまうため保持する。
+    COMPACT_PRESERVE = frozenset({"tracked_ask_ids", "notified_ask_ids", "sanitize_offset", "sanitize_failure_count"})
+
     @classmethod
     def clear_session(cls, session_id: str, *, preserve: set[str] | None = None) -> None:
         """BASE_DIR内の全状態ファイルとeventsファイルを削除する。
@@ -287,6 +300,29 @@ class HookState:
             except OSError:
                 pass
 
+    @classmethod
+    def clear_for_source(cls, session_id: str, source: str | None) -> None:
+        """SessionStartのsourceに応じてセッションの状態を消す（hook_state.py clear の本体）。
+
+        - compact: COMPACT_PRESERVE のファイルを残して消す
+        - resume: 全部消したうえで、まだ配達していないnudgeイベントだけを書き戻す。
+          前のターンのStopが積んだnudgeは次のUserPromptSubmitで配達されるが、
+          codex exec resume はターンごとに起動し直して SessionStart(resume) が走るため、
+          ここで消すと配達前に失われる（#911）。tool等のほかのイベントは、
+          transcript_offset が消えるので次のStopがtranscriptの先頭から作り直す
+          （残すと二重になる）
+        - それ以外（startup・clear等）: 全部消す
+        """
+        preserve = set(cls.COMPACT_PRESERVE) if source == "compact" else None
+        pending: list[dict] = []
+        if source == "resume":
+            pending = [
+                e for e in cls(session_id).read_events() if e.get("e") == "nudge" and not e.get("consumed")
+            ]
+        cls.clear_session(session_id, preserve=preserve)
+        if pending:
+            cls(session_id).append_events(pending)
+
 
 if __name__ == "__main__":
     import json
@@ -304,23 +340,9 @@ if __name__ == "__main__":
     if os.environ.get("HOOK_STATE_DIR"):
         HookState.BASE_DIR = Path(os.environ["HOOK_STATE_DIR"])
 
-    # compact時にクリア対象から除外するprefix。tracked_ask_ids（このセッションが
-    # add_askし通知待ちで追跡中のask_id一覧）はcompactをまたいで生存すべき情報
-    # のため保持する（resume/clear/startupではクリアされる。質問者セッションが
-    # 実質終わった扱いとみなし、以降の回収はpull（check_in/get_asks）に委ねる
-    # 設計）。
-    # notified_ask_ids（check_in先と隣の作業のaskとして既に知らせたask_id一覧）も
-    # 保持する。compactで消すと、直後のStopがtranscriptを先頭から読み直して
-    # check_in先とcheck_in時刻を元の値で復元し、知らせ済みのaskをもう一度知らせてしまう。
-    # sanitize_offset / sanitize_failure_count も同様にセッション単位の進行状態
-    # であり、compactで消すとsanitize_backfill_hookの冪等な再開とループ防止
-    # ガードがcompactごとにリセットされてしまうため保持する。
-    _COMPACT_PRESERVE = {"tracked_ask_ids", "notified_ask_ids", "sanitize_offset", "sanitize_failure_count"}
-
     if len(sys.argv) >= 2 and sys.argv[1] == "clear":
         data = json.loads(read_stdin_text())
         session_id = data.get("session_id", "")
         source = data.get("source")
         if session_id:
-            preserve = _COMPACT_PRESERVE if source == "compact" else None
-            HookState.clear_session(session_id, preserve=preserve)
+            HookState.clear_for_source(session_id, source)
